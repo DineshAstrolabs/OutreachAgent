@@ -54,30 +54,44 @@ MC_PARSE_SYSTEM_PROMPT = """\
 You are parsing the HTML response from Saudi Arabia's Ministry of Commerce
 public CR lookup (mc.gov.sa/en/eservices/Pages/Commercial-data.aspx).
 
-Extract the fields of the first CR Record shown on the page. Labels appear
-in English with values next to or under them. Typical labels you will see:
-  - Business Type, CR Status, Company Duration
-  - CR Number, Url Address, Capital
-  - phone, Issue date, Expiry date (or CR Expiry)
-  - Activities (long free text — ignore unless asked)
-  - Company legal name appears at the top of the card.
-  - National No / Unified Number appears under the company name.
+Extract EVERY field on the first CR Record shown. The card uses English
+labels (sometimes with Arabic duplicates). Map each label to the schema:
+
+  Label on page              Schema field
+  ─────────────────────────  ────────────────────────────
+  (title of the card)        company_legal_name
+  National No / Unified No   (unified_number — set server-side, ignore)
+  Business Type              business_type_raw   (verbatim string)
+  CR Status                  cr_status
+  Company Duration           company_duration_years   (integer)
+  CR Number                  cr_number
+  Url Address                website_url         (may be blank)
+  Capital                    registered_capital_sar   (integer SAR)
+  phone                      phone
+  Issue date                 cr_issue_date       (YYYY-MM-DD)
+  Expiry date / CR Expiry    cr_expiry_date      (YYYY-MM-DD)
+  Activities                 activities          (full text, verbatim)
+  City / Region              city / region
+  ISIC activity code         business_activity_isic
 
 Also detect these outcome states:
   - If the page shows "no results", "No Records", a validation summary like
     "Please enter the verification code", or the result card is absent ->
-    return status="NOT_FOUND" and company_name="".
+    return found=false, status="Not Found", company_legal_name="".
   - If captcha was wrong, MC re-renders the form without a CR Records card
     -> same as NOT_FOUND.
 
 Map cr_status to one of: Active, Expired, Cancelled, Struck Off, Not Found.
 Map entity_type to one of: LLC foreign, Branch of foreign co, LLC Saudi,
 Sole proprietorship, Government, Semi-government, Unknown. Use MC's
-"Business Type" field as the signal:
-  - "Company" alone is not enough; look at activities + foreign ownership.
-  - If you cannot tell, return "Unknown" and we'll let downstream handle it.
+"Business Type" field as the primary signal, combined with activities /
+foreign ownership cues. If you cannot tell, return "Unknown".
 
-Dates should be YYYY-MM-DD. Integers must be integers (strip SAR/commas).
+Always preserve `business_type_raw` exactly as MC prints it, even when you
+also fill `entity_type` with a normalized value.
+
+Dates: YYYY-MM-DD. Integers: integers only (strip SAR / commas / currency).
+`activities` may be long — preserve it in full, do NOT truncate.
 """
 
 
@@ -88,12 +102,30 @@ class MCParsed(BaseModel):
     company_legal_name: str = ""
     cr_status: str = "Not Found"  # Active | Expired | Cancelled | Struck Off | Not Found
     entity_type: str = "Unknown"
+    business_type_raw: str | None = Field(
+        default=None,
+        description='Raw "Business Type" string as printed by MC (e.g., "Company")',
+    )
     cr_number: str | None = None
+    cr_issue_date: str | None = Field(
+        default=None, description="YYYY-MM-DD if present"
+    )
     cr_expiry_date: str | None = Field(
         default=None, description="YYYY-MM-DD if present"
     )
+    company_duration_years: int | None = Field(
+        default=None, description='"Company Duration" as integer years'
+    )
     business_activity_isic: str | None = None
+    activities: str | None = Field(
+        default=None,
+        description='Full "Activities" free-text field, verbatim (may be long)',
+    )
     registered_capital_sar: int | None = None
+    phone: str | None = None
+    website_url: str | None = Field(
+        default=None, description='"Url Address" — company website if present'
+    )
     city: str | None = None
     region: str | None = None
 
@@ -496,8 +528,14 @@ def _strip_html_noise(html: str) -> str:
 _REGEX_LABELS = {
     "cr_status": r"CR\s*Status\s*[:<>]?\s*([^<\n]{1,40})",
     "cr_number": r"CR\s*Number\s*[:<>]?\s*([0-9]{5,})",
+    "business_type": r"Business\s*Type\s*[:<>]?\s*([^<\n]{1,60})",
     "capital": r"Capital\s*[:<>]?\s*([0-9,\.]+)",
+    "duration": r"Company\s*Duration\s*[:<>]?\s*([0-9]{1,4})",
+    "issue": r"Issue\s*date\s*[:<>]?\s*([0-9\-/]{8,12})",
     "expiry": r"(?:Expiry\s*date|CR\s*Expiry)\s*[:<>]?\s*([0-9\-/]{8,12})",
+    "phone": r"phone\s*[:<>]?\s*([0-9+\-\s()]{6,20})",
+    "website": r"Url\s*Address\s*[:<>]?\s*((?:https?://)?[^\s<]{3,200})",
+    "activities": r"Activities\s*[:<>]?\s*([^<]{3,4000})",
     "company_name": r"<h[1-6][^>]*>\s*([^<]{3,200})\s*</h[1-6]>",
 }
 
@@ -518,9 +556,15 @@ def _parse_with_regex(html: str) -> MCParsed:
         company_legal_name=grab("company_name") or "",
         cr_status=status_raw or "Not Found",
         entity_type="Unknown",
+        business_type_raw=grab("business_type"),
         cr_number=grab("cr_number"),
+        cr_issue_date=grab("issue"),
         cr_expiry_date=grab("expiry"),
+        company_duration_years=_first_int(grab("duration")),
+        activities=grab("activities"),
         registered_capital_sar=_first_int(grab("capital")),
+        phone=grab("phone"),
+        website_url=grab("website"),
     )
 
 
@@ -550,15 +594,25 @@ class StubMCSource:
         path = self.fixtures_dir / f"{unified_number}.json"
         if path.exists():
             data = json.loads(path.read_text())
+
+            def _d(key):
+                return datetime.strptime(data[key], "%Y-%m-%d").date() if data.get(key) else None
+
             return MCData(
                 unified_number=unified_number,
                 company_legal_name=data["company_legal_name"],
                 cr_status=CRStatus(data["cr_status"]),
                 entity_type=EntityType(data["entity_type"]),
-                cr_expiry_date=datetime.strptime(data["cr_expiry_date"], "%Y-%m-%d").date()
-                    if data.get("cr_expiry_date") else None,
+                cr_number=data.get("cr_number"),
+                cr_issue_date=_d("cr_issue_date"),
+                cr_expiry_date=_d("cr_expiry_date"),
+                business_type_raw=data.get("business_type_raw"),
+                company_duration_years=data.get("company_duration_years"),
                 business_activity_isic=data.get("business_activity_isic"),
+                activities=data.get("activities"),
                 registered_capital_sar=data.get("registered_capital_sar"),
+                phone=data.get("phone"),
+                website_url=data.get("website_url"),
                 subsidiary_cr_count=data.get("subsidiary_cr_count", 0),
                 city=data.get("city"),
                 region=data.get("region"),
@@ -616,14 +670,25 @@ def _not_found(unified_number: str) -> MCData:
 
 
 def _mcparsed_to_mcdata(unified_number: str, parsed: MCParsed) -> MCData:
+    # When Claude only returned business_type_raw but not a normalized
+    # entity_type, run our own classifier on the raw string so downstream
+    # gates still work.
+    entity_type = _parse_entity_type(parsed.entity_type or parsed.business_type_raw or "")
     return MCData(
         unified_number=unified_number,
         company_legal_name=parsed.company_legal_name,
         cr_status=_parse_status(parsed.cr_status),
-        entity_type=_parse_entity_type(parsed.entity_type),
+        entity_type=entity_type,
+        cr_number=parsed.cr_number,
+        cr_issue_date=_parse_date(parsed.cr_issue_date),
         cr_expiry_date=_parse_date(parsed.cr_expiry_date),
+        business_type_raw=parsed.business_type_raw,
+        company_duration_years=parsed.company_duration_years,
         business_activity_isic=parsed.business_activity_isic,
+        activities=parsed.activities,
         registered_capital_sar=parsed.registered_capital_sar,
+        phone=parsed.phone,
+        website_url=parsed.website_url,
         city=parsed.city,
         region=parsed.region,
     )

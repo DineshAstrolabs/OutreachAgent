@@ -60,15 +60,27 @@ class CompanyType(str, Enum):
 
 @dataclass
 class MCData:
-    """Data extracted from the MC Commercial Registration public lookup."""
+    """Data extracted from the MC Commercial Registration public lookup.
+
+    Captures every field rendered in MC's CR Records card. `entity_type` is
+    our normalized classification; `business_type_raw` is the exact string
+    MC prints (e.g., "Company", "Sole Proprietorship"). Both are kept —
+    the raw value preserves fidelity for audit / re-classification."""
 
     unified_number: str
     company_legal_name: str
     cr_status: CRStatus
     entity_type: EntityType
+    cr_number: str | None = None
+    cr_issue_date: date | None = None
     cr_expiry_date: date | None = None
+    business_type_raw: str | None = None      # "Business Type" as MC prints it
+    company_duration_years: int | None = None  # "Company Duration"
     business_activity_isic: str | None = None
+    activities: str | None = None              # free-text activities list
     registered_capital_sar: int | None = None
+    phone: str | None = None
+    website_url: str | None = None             # "Url Address"
     subsidiary_cr_count: int = 0
     city: str | None = None
     region: str | None = None

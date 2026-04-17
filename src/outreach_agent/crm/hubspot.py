@@ -25,12 +25,19 @@ log = logging.getLogger(__name__)
 # Create these before first run via HubSpot's "Create a property" endpoint.
 PROPERTY_SCHEMA: dict[str, tuple[str, str, str]] = {
     "unified_number":             ("Unified Number", "string", "Saudi CR Unified Number"),
+    "cr_number":                  ("CR Number", "string", "Commercial Registration number"),
     "cr_status":                  ("CR Status", "enumeration", "Active/Expired/Cancelled/..."),
     "cr_entity_type":             ("CR Entity Type", "enumeration", "LLC foreign / Branch / ..."),
+    "cr_business_type_raw":       ("CR Business Type (raw)", "string", "MC 'Business Type' as printed"),
+    "cr_issue_date":              ("CR Issue Date", "date", ""),
     "cr_expiry_date":             ("CR Expiry Date", "date", ""),
+    "company_duration_years":     ("Company Duration (years)", "number", ""),
     "business_activity_isic":     ("Business Activity ISIC", "string", ""),
+    "activities":                 ("Activities", "string", "Free-text activities list"),
     "registered_capital_sar":     ("Registered Capital (SAR)", "number", ""),
     "subsidiary_cr_count":        ("Subsidiary CRs", "number", ""),
+    "phone":                      ("Phone", "string", ""),
+    "website_url":                ("Website URL", "string", "MC 'Url Address'"),
     "ksa_city":                   ("KSA City", "string", ""),
     "ksa_region":                 ("KSA Region", "string", ""),
 
@@ -93,12 +100,19 @@ def to_hubspot_properties(r: QualificationResult) -> dict[str, object]:
     if mc is not None:
         props.update({
             "name": mc.company_legal_name,
+            "cr_number": mc.cr_number,
             "cr_status": mc.cr_status.value,
             "cr_entity_type": mc.entity_type.value,
+            "cr_business_type_raw": mc.business_type_raw,
+            "cr_issue_date": mc.cr_issue_date.isoformat() if mc.cr_issue_date else None,
             "cr_expiry_date": mc.cr_expiry_date.isoformat() if mc.cr_expiry_date else None,
+            "company_duration_years": mc.company_duration_years,
             "business_activity_isic": mc.business_activity_isic,
+            "activities": mc.activities,
             "registered_capital_sar": mc.registered_capital_sar,
             "subsidiary_cr_count": mc.subsidiary_cr_count,
+            "phone": mc.phone,
+            "website_url": mc.website_url,
             "ksa_city": mc.city,
             "ksa_region": mc.region,
         })
