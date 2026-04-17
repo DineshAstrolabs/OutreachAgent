@@ -127,7 +127,7 @@ def _build_live(config: Config) -> Pipeline:
         crm = None
 
     return Pipeline(
-        mc=MCSource(captcha),
+        mc=MCSource(captcha, anthropic_api_key=config.anthropic_api_key),
         web_sources=web_sources,
         champion_source=champion_source,
         crm=crm,

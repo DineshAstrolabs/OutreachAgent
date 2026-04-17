@@ -110,6 +110,26 @@ had before. Apollo covers Apollo's native org/people endpoints; growth %
 (#13) is left unscored in live mode because Apollo's free tier doesn't expose
 historical headcount snapshots.
 
+### Debugging MC lookups
+
+If a live query returns `Not Found` for a CR number you can see on
+[mc.gov.sa](https://mc.gov.sa/en/eservices/Pages/Commercial-data.aspx)
+manually, the scraper writes the raw HTML response to
+`.outreach-debug/mc-<unified>-<ts>.html` so you can inspect what actually
+came back. Two causes cover ~95% of failures:
+
+1. **Wrong captcha** — MC re-renders the form without a result card. Check
+   the log line `captcha solved to '...'` against what was visible on the
+   image. Tesseract is the most likely culprit; switch to
+   `CAPTCHA_PROVIDER=anthropic` or `twocaptcha` for harder captchas.
+2. **Form-field drift** — MC rotates its `ctl00_*_g_<guid>_*` field names.
+   The scraper discovers fields by suffix match (`UnifiedNumber`,
+   `txtCaptcha`, `btnSearch`); if MC renames these, update the suffix list
+   in `sources/mc.py::_locate_form_fields`.
+
+Result parsing uses Claude (if `ANTHROPIC_API_KEY` is set) with a regex
+fallback, so layout tweaks on MC's result card don't break the pipeline.
+
 ### Captcha provider
 
 MC's lookup is gated by a short image captcha. Pick a solver via
