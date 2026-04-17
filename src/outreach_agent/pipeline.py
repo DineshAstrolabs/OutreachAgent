@@ -119,3 +119,15 @@ class LinkedInChampionAdapter:
 
     def find(self, company_name: str) -> Champions:
         return self.inner.find_champions(company_name)
+
+
+# ---------------------------------------------------------------------------
+# Null sources — used when an integration is disabled via config flags.
+# ---------------------------------------------------------------------------
+
+
+class NullChampionSource:
+    """Returns an empty Champions bundle. Used when Apollo is disabled."""
+
+    def find(self, company_name: str) -> Champions:
+        return Champions()

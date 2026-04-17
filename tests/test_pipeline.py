@@ -44,6 +44,36 @@ def test_full_pipeline_disqualified_expired_cr(monkeypatch):
     assert result.web is None
 
 
+def test_apollo_disabled_skips_source_and_champions(monkeypatch):
+    monkeypatch.setenv("OUTREACH_AGENT_MODE", "stub")
+    monkeypatch.setenv("APOLLO_ENABLED", "false")
+    cfg = Config.load()
+    pipeline = build_pipeline(cfg)
+    result = pipeline.run("7012345678")
+
+    assert not result.disqualified
+    assert "apollo" not in result.web.sources_seen
+    # Champions bundle is empty — no admin, no GM.
+    assert result.champions.admin is None
+    assert result.champions.gm is None
+
+
+def test_hubspot_disabled_skips_crm_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("OUTREACH_AGENT_MODE", "stub")
+    monkeypatch.setenv("HUBSPOT_ENABLED", "false")
+    # Stub writer would normally drop a JSON next to cwd; verify nothing runs.
+    monkeypatch.chdir(tmp_path)
+    cfg = Config.load()
+    pipeline = build_pipeline(cfg)
+    result = pipeline.run("7012345678")
+
+    assert not result.disqualified
+    assert pipeline.crm is None
+    # StubHubSpotWriter creates ./results/ on construction; if it never
+    # gets built, the directory must not exist.
+    assert not (tmp_path / "results").exists()
+
+
 def test_unknown_unified_number_uses_default(monkeypatch):
     """Stub source returns a default Active LLC for unknown numbers so the
     pipeline stays demoable without pre-seeded fixtures."""

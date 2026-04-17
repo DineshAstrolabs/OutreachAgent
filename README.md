@@ -110,6 +110,19 @@ had before. Apollo covers Apollo's native org/people endpoints; growth %
 (#13) is left unscored in live mode because Apollo's free tier doesn't expose
 historical headcount snapshots.
 
+### Disabling integrations
+
+Two env flags bypass specific integrations without touching code:
+
+| Flag | Default | Effect when `false` |
+|---|---|---|
+| `APOLLO_ENABLED` | `true` | No Apollo web source, champions bundle is empty, no KSA presence / headcount / vacancies scored |
+| `HUBSPOT_ENABLED` | `true` | Qualification still runs and returns a result; CRM write is skipped |
+
+Both flags work in stub and live mode. In live mode, disabling Apollo also
+skips the `APOLLO_API_KEY` check; disabling HubSpot skips the
+`HUBSPOT_API_TOKEN` check.
+
 ## Tests
 
 ```bash
