@@ -1,0 +1,9 @@
+{
+  "ksa_news_last_6mo": true,
+  "general_news_last_6mo": true,
+  "funding_mentions_ksa": true,
+  "partnership_with_saudi_entity": true,
+  "social_mention_by_saudi_partner": false,
+  "new_gm_within_6mo": true,
+  "senior_hire_within_6mo": false
+}

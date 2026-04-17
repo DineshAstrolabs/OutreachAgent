@@ -1,0 +1,23 @@
+{
+  "has_ksa_office_listed": true,
+  "ksa_saudization_quota_roles": true,
+  "ksa_generic_roles": true,
+  "ksa_headcount": 35,
+  "ksa_headcount_growth_6mo_pct": 25,
+  "global_headcount": 180,
+  "ksa_open_vacancies": 7,
+  "company_type": "Scale-up",
+  "admin": {
+    "name": "Sara Al-Otaibi",
+    "title": "Office Manager & HR Coordinator",
+    "linkedin_url": "https://linkedin.com/in/example-sara",
+    "start_date": "2022-03-01"
+  },
+  "admin_is_overwhelmed": true,
+  "gm": {
+    "name": "James Chen",
+    "title": "General Manager KSA",
+    "linkedin_url": "https://linkedin.com/in/example-james",
+    "start_date": "2025-12-01"
+  }
+}
