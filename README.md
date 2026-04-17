@@ -112,16 +112,30 @@ historical headcount snapshots.
 
 ### Disabling integrations
 
-Two env flags bypass specific integrations without touching code:
+Three env flags bypass specific integrations without touching code.
+Disabled paid integrations automatically fall back to Claude + `web_search`:
 
 | Flag | Default | Effect when `false` |
 |---|---|---|
-| `APOLLO_ENABLED` | `true` | No Apollo web source, champions bundle is empty, no KSA presence / headcount / vacancies scored |
+| `APOLLO_ENABLED` | `true` | `AnthropicCompanySource` (KSA office, headcount, vacancies, company type/model) + `AnthropicChampionSource` (admin + GM via public LinkedIn data) take over |
+| `CRUNCHBASE_ENABLED` | `true` | Crunchbase skipped; `AnthropicNewsSource` already reports `funding_last_12mo` + `funding_mentions_ksa` |
 | `HUBSPOT_ENABLED` | `true` | Qualification still runs and returns a result; CRM write is skipped |
 
-Both flags work in stub and live mode. In live mode, disabling Apollo also
-skips the `APOLLO_API_KEY` check; disabling HubSpot skips the
-`HUBSPOT_API_TOKEN` check.
+All flags work in stub and live mode. In live mode, disabling an
+integration also skips its API-key check; disabling Apollo or Crunchbase
+requires `ANTHROPIC_API_KEY` because the fallback depends on it.
+
+Example — Claude-only live mode (no Apollo, no Crunchbase, no HubSpot write):
+
+```bash
+export OUTREACH_AGENT_MODE=live
+export ANTHROPIC_API_KEY=sk-ant-...
+export TWOCAPTCHA_API_KEY=...
+export APOLLO_ENABLED=false
+export CRUNCHBASE_ENABLED=false
+export HUBSPOT_ENABLED=false
+outreach-agent score 7012345678
+```
 
 ## Tests
 

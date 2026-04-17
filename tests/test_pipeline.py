@@ -44,7 +44,9 @@ def test_full_pipeline_disqualified_expired_cr(monkeypatch):
     assert result.web is None
 
 
-def test_apollo_disabled_skips_source_and_champions(monkeypatch):
+def test_apollo_disabled_routes_to_anthropic_fallback(monkeypatch):
+    """Apollo off → AnthropicCompanySource + AnthropicChampionSource take over.
+    Champions and web intel are still populated (from the fixture)."""
     monkeypatch.setenv("OUTREACH_AGENT_MODE", "stub")
     monkeypatch.setenv("APOLLO_ENABLED", "false")
     cfg = Config.load()
@@ -53,9 +55,23 @@ def test_apollo_disabled_skips_source_and_champions(monkeypatch):
 
     assert not result.disqualified
     assert "apollo" not in result.web.sources_seen
-    # Champions bundle is empty — no admin, no GM.
-    assert result.champions.admin is None
-    assert result.champions.gm is None
+    assert "anthropic_company" in result.web.sources_seen
+    # Fallback still populates champions from the same fixture.
+    assert result.champions.admin is not None
+    assert result.champions.gm is not None
+
+
+def test_crunchbase_disabled_skips_source(monkeypatch):
+    """Crunchbase off → funding signals fall back to Anthropic news coverage."""
+    monkeypatch.setenv("OUTREACH_AGENT_MODE", "stub")
+    monkeypatch.setenv("CRUNCHBASE_ENABLED", "false")
+    cfg = Config.load()
+    pipeline = build_pipeline(cfg)
+    result = pipeline.run("7012345678")
+
+    assert not result.disqualified
+    assert "crunchbase" not in result.web.sources_seen
+    assert "anthropic_news" in result.web.sources_seen
 
 
 def test_hubspot_disabled_skips_crm_write(monkeypatch, tmp_path):

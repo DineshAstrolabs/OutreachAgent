@@ -31,9 +31,11 @@ class Config:
     hubspot_api_token: str | None
     hubspot_portal_id: str | None
 
-    # Integration toggles. When false in live mode, that integration is
-    # replaced with a no-op (web source contributes nothing, CRM write skipped).
+    # Integration toggles. When false, that integration is skipped and (for
+    # Apollo + Crunchbase) Anthropic/Claude takes over the research via
+    # web_search. HubSpot has no fallback — the result is just not persisted.
     apollo_enabled: bool = True
+    crunchbase_enabled: bool = True
     hubspot_enabled: bool = True
 
     @classmethod
@@ -48,6 +50,7 @@ class Config:
             hubspot_api_token=os.getenv("HUBSPOT_API_TOKEN") or None,
             hubspot_portal_id=os.getenv("HUBSPOT_PORTAL_ID") or None,
             apollo_enabled=_env_flag("APOLLO_ENABLED", default=True),
+            crunchbase_enabled=_env_flag("CRUNCHBASE_ENABLED", default=True),
             hubspot_enabled=_env_flag("HUBSPOT_ENABLED", default=True),
         )
 
