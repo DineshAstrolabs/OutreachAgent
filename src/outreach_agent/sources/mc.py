@@ -279,10 +279,40 @@ def _collect_hidden_inputs(soup: BeautifulSoup) -> dict[str, str]:
 
 def _locate_form_fields(soup: BeautifulSoup) -> _FormFields:
     """Match by suffix since SharePoint prefixes rotate per page render
-    (ctl00_ctl71_g_<guid>_ctl00_...)."""
-    unified = _find_input_by_suffix(soup, ("UnifiedNumber", "txtUnifiedNumber", "txtSearch"))
-    captcha = _find_input_by_suffix(soup, ("txtCaptcha", "CaptchaCodeTextBox", "exampleCaptcha$CaptchaCodeTextBox"))
-    submit = _find_submit_by_suffix(soup, ("btnSearch", "btnSubmit", "Search"))
+    (ctl00_ctl71_g_<guid>_ctl00_...). For the Unified Number input we fall
+    back to "the first visible text input that isn't the captcha" since
+    MC's form has exactly two visible text fields and the Unified Number
+    one has historically had different names per page redesign
+    (txtSearch / txtUnifiedNumber / txtNationalNumber / txtCRNumber …)."""
+    captcha = _find_input_by_suffix(
+        soup,
+        (
+            "txtCaptcha",
+            "CaptchaCodeTextBox",
+            "exampleCaptcha$CaptchaCodeTextBox",
+        ),
+    )
+    submit = _find_submit_by_suffix(
+        soup, ("btnSearch", "btnSubmit", "Search")
+    )
+    unified = _find_input_by_suffix(
+        soup,
+        (
+            "UnifiedNumber",
+            "txtUnifiedNumber",
+            "txtNationalNumber",
+            "txtNationalNo",
+            "txtCRNumber",
+            "NationalNumberTextBox",
+            "txtSearch",
+        ),
+    )
+    if unified is None:
+        # Last-resort heuristic: take the only other visible text input.
+        unified = _first_text_input_excluding(soup, captcha)
+        if unified is not None:
+            log.info("unified-number field discovered by heuristic: %s", unified)
+
     return _FormFields(unified, captcha, submit)
 
 
@@ -299,6 +329,23 @@ def _find_submit_by_suffix(soup: BeautifulSoup, suffixes: tuple[str, ...]) -> st
         name = inp.get("name") or ""
         if any(name.endswith(s) or s in name for s in suffixes):
             return name
+    return None
+
+
+def _first_text_input_excluding(
+    soup: BeautifulSoup, exclude_name: str | None
+) -> str | None:
+    """Return the first visible text input whose name isn't the captcha's.
+    MC renders the Unified Number input above the captcha input; either order
+    works because there are only two visible text fields."""
+    for inp in soup.select("input[type='text'], input:not([type])"):
+        name = inp.get("name") or ""
+        input_type = (inp.get("type") or "text").lower()
+        if input_type in ("hidden", "submit", "button", "image"):
+            continue
+        if not name or name == exclude_name:
+            continue
+        return name
     return None
 
 
