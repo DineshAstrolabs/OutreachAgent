@@ -36,7 +36,7 @@ from pathlib import Path
 
 import httpx
 from bs4 import BeautifulSoup
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..captcha import CaptchaSolver
 from ..models import CRStatus, EntityType, MCData
@@ -96,38 +96,29 @@ Dates: YYYY-MM-DD. Integers: integers only (strip SAR / commas / currency).
 
 
 class MCParsed(BaseModel):
-    """Normalized view of the MC CR page result."""
+    """Normalized view of the MC CR page result.
 
-    found: bool = Field(description="True iff a CR record card was rendered")
+    Kept intentionally flat — the Anthropic `messages.parse` JSON schema has
+    a complexity ceiling, so each field is a plain scalar with no per-field
+    metadata. Label→field semantics are described in MC_PARSE_SYSTEM_PROMPT.
+    """
+
+    found: bool = False
     company_legal_name: str = ""
-    cr_status: str = "Not Found"  # Active | Expired | Cancelled | Struck Off | Not Found
+    cr_status: str = "Not Found"
     entity_type: str = "Unknown"
-    business_type_raw: str | None = Field(
-        default=None,
-        description='Raw "Business Type" string as printed by MC (e.g., "Company")',
-    )
-    cr_number: str | None = None
-    cr_issue_date: str | None = Field(
-        default=None, description="YYYY-MM-DD if present"
-    )
-    cr_expiry_date: str | None = Field(
-        default=None, description="YYYY-MM-DD if present"
-    )
-    company_duration_years: int | None = Field(
-        default=None, description='"Company Duration" as integer years'
-    )
-    business_activity_isic: str | None = None
-    activities: str | None = Field(
-        default=None,
-        description='Full "Activities" free-text field, verbatim (may be long)',
-    )
-    registered_capital_sar: int | None = None
-    phone: str | None = None
-    website_url: str | None = Field(
-        default=None, description='"Url Address" — company website if present'
-    )
-    city: str | None = None
-    region: str | None = None
+    business_type_raw: str = ""
+    cr_number: str = ""
+    cr_issue_date: str = ""
+    cr_expiry_date: str = ""
+    company_duration_years: int = 0
+    business_activity_isic: str = ""
+    activities: str = ""
+    registered_capital_sar: int = 0
+    phone: str = ""
+    website_url: str = ""
+    city: str = ""
+    region: str = ""
 
 
 class MCSource:
@@ -543,17 +534,17 @@ _REGEX_LABELS = {
 def _parse_with_regex(html: str) -> MCParsed:
     cleaned = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
 
-    def grab(key):
+    def grab(key: str) -> str:
         m = re.search(_REGEX_LABELS[key], cleaned, re.IGNORECASE)
-        return m.group(1).strip() if m else None
+        return m.group(1).strip() if m else ""
 
-    status_raw = grab("cr_status") or ""
+    status_raw = grab("cr_status")
     has_any = any(
         kw.lower() in cleaned.lower() for kw in ("CR Records", "National No", "CR Details")
     )
     return MCParsed(
         found=has_any and bool(status_raw),
-        company_legal_name=grab("company_name") or "",
+        company_legal_name=grab("company_name"),
         cr_status=status_raw or "Not Found",
         entity_type="Unknown",
         business_type_raw=grab("business_type"),
@@ -568,11 +559,11 @@ def _parse_with_regex(html: str) -> MCParsed:
     )
 
 
-def _first_int(s: str | None) -> int | None:
+def _first_int(s: str) -> int:
     if not s:
-        return None
+        return 0
     digits = re.sub(r"[^\d]", "", s)
-    return int(digits) if digits else None
+    return int(digits) if digits else 0
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +661,14 @@ def _not_found(unified_number: str) -> MCData:
 
 
 def _mcparsed_to_mcdata(unified_number: str, parsed: MCParsed) -> MCData:
+    # MCParsed uses empty strings / 0 as sentinels (to keep the JSON schema
+    # simple for messages.parse). MCData uses None. Normalize here.
+    def _s(v: str) -> str | None:
+        return v or None
+
+    def _i(v: int) -> int | None:
+        return v if v else None
+
     # When Claude only returned business_type_raw but not a normalized
     # entity_type, run our own classifier on the raw string so downstream
     # gates still work.
@@ -679,18 +678,18 @@ def _mcparsed_to_mcdata(unified_number: str, parsed: MCParsed) -> MCData:
         company_legal_name=parsed.company_legal_name,
         cr_status=_parse_status(parsed.cr_status),
         entity_type=entity_type,
-        cr_number=parsed.cr_number,
+        cr_number=_s(parsed.cr_number),
         cr_issue_date=_parse_date(parsed.cr_issue_date),
         cr_expiry_date=_parse_date(parsed.cr_expiry_date),
-        business_type_raw=parsed.business_type_raw,
-        company_duration_years=parsed.company_duration_years,
-        business_activity_isic=parsed.business_activity_isic,
-        activities=parsed.activities,
-        registered_capital_sar=parsed.registered_capital_sar,
-        phone=parsed.phone,
-        website_url=parsed.website_url,
-        city=parsed.city,
-        region=parsed.region,
+        business_type_raw=_s(parsed.business_type_raw),
+        company_duration_years=_i(parsed.company_duration_years),
+        business_activity_isic=_s(parsed.business_activity_isic),
+        activities=_s(parsed.activities),
+        registered_capital_sar=_i(parsed.registered_capital_sar),
+        phone=_s(parsed.phone),
+        website_url=_s(parsed.website_url),
+        city=_s(parsed.city),
+        region=_s(parsed.region),
     )
 
 
@@ -721,6 +720,6 @@ def _parse_date(s: str | None):
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
         try:
             return datetime.strptime(s.strip(), fmt).date()
-        except ValueError:
+        except (TypeError, ValueError):
             continue
     return None
