@@ -192,7 +192,10 @@ class MCSource:
                 # Hard failure (missing form fields / captcha image missing).
                 return _not_found(unified_number)
             if parsed.found:
-                return _mcparsed_to_mcdata(unified_number, parsed)
+                _log_mcparsed(parsed)
+                mc_data = _mcparsed_to_mcdata(unified_number, parsed)
+                _log_mcdata(mc_data)
+                return mc_data
             log.info(
                 "[MC] attempt %d: no CR record card — likely bad captcha, will retry",
                 attempt,
@@ -711,6 +714,65 @@ _ENTITY_MAP = {
     "semi-government": EntityType.SEMI_GOVERNMENT,
     "semi government": EntityType.SEMI_GOVERNMENT,
 }
+
+
+def _log_mcparsed(parsed: MCParsed) -> None:
+    """One INFO line per MC field so we can eyeball what Claude / regex
+    pulled from the CR card. Keeps field labels aligned with what the
+    MC page actually prints so a diff against a browser view is trivial."""
+    rows = [
+        ("company_legal_name",     parsed.company_legal_name),
+        ("cr_status",              parsed.cr_status),
+        ("entity_type",            parsed.entity_type),
+        ("business_type_raw",      parsed.business_type_raw),
+        ("cr_number",              parsed.cr_number),
+        ("cr_issue_date",          parsed.cr_issue_date),
+        ("cr_expiry_date",         parsed.cr_expiry_date),
+        ("company_duration_years", parsed.company_duration_years),
+        ("business_activity_isic", parsed.business_activity_isic),
+        ("activities",             _truncate(parsed.activities, 240)),
+        ("registered_capital_sar", parsed.registered_capital_sar),
+        ("phone",                  parsed.phone),
+        ("website_url",            parsed.website_url),
+        ("city",                   parsed.city),
+        ("region",                 parsed.region),
+    ]
+    log.info("[MC] extracted fields (from parser):")
+    for name, value in rows:
+        log.info("  %-24s = %r", name, value)
+    missing = [n for n, v in rows if v in ("", 0, None)]
+    if missing:
+        log.info("[MC] fields returned empty: %s", ", ".join(missing))
+
+
+def _log_mcdata(mc: MCData) -> None:
+    """Post-normalization snapshot so it's obvious when _parse_date or
+    _parse_entity_type coerced a raw value into something different."""
+    log.info("[MC] normalized MCData:")
+    log.info("  %-24s = %s", "unified_number",         mc.unified_number)
+    log.info("  %-24s = %r", "company_legal_name",     mc.company_legal_name)
+    log.info("  %-24s = %s", "cr_status",              mc.cr_status.value)
+    log.info("  %-24s = %s", "entity_type",            mc.entity_type.value)
+    log.info("  %-24s = %r", "business_type_raw",      mc.business_type_raw)
+    log.info("  %-24s = %r", "cr_number",              mc.cr_number)
+    log.info("  %-24s = %s", "cr_issue_date",          mc.cr_issue_date)
+    log.info("  %-24s = %s", "cr_expiry_date",         mc.cr_expiry_date)
+    log.info("  %-24s = %r", "company_duration_years", mc.company_duration_years)
+    log.info("  %-24s = %r", "business_activity_isic", mc.business_activity_isic)
+    log.info("  %-24s = %r", "activities",             _truncate(mc.activities, 240))
+    log.info("  %-24s = %r", "registered_capital_sar", mc.registered_capital_sar)
+    log.info("  %-24s = %r", "phone",                  mc.phone)
+    log.info("  %-24s = %r", "website_url",            mc.website_url)
+    log.info("  %-24s = %r", "city",                   mc.city)
+    log.info("  %-24s = %r", "region",                 mc.region)
+
+
+def _truncate(s: str | None, limit: int) -> str | None:
+    if s is None:
+        return None
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"…(+{len(s) - limit} chars)"
 
 
 def _not_found(unified_number: str) -> MCData:
