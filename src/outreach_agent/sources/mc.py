@@ -95,6 +95,29 @@ Dates: YYYY-MM-DD. Integers: integers only (strip SAR / commas / currency).
 """
 
 
+_JSON_INSTRUCTIONS = """\
+Respond with ONE JSON object and nothing else — no markdown fence, no prose.
+
+Use exactly these keys (all required; use "" or 0 when the field is absent):
+  found                  boolean
+  company_legal_name     string
+  cr_status              string
+  entity_type            string
+  business_type_raw      string
+  cr_number              string
+  cr_issue_date          string   (YYYY-MM-DD or "")
+  cr_expiry_date         string   (YYYY-MM-DD or "")
+  company_duration_years integer
+  business_activity_isic string
+  activities             string
+  registered_capital_sar integer  (SAR, no separators)
+  phone                  string
+  website_url            string
+  city                   string
+  region                 string
+"""
+
+
 class MCParsed(BaseModel):
     """Normalized view of the MC CR page result.
 
@@ -303,15 +326,17 @@ class MCSource:
         return parsed
 
     def _parse_with_claude(self, html: str) -> MCParsed:
-        # Keep payload tight: strip tags we don't need for content extraction.
+        # We don't use messages.parse here: strict-schema mode rejects our
+        # 16-field model as "Schema is too complex". Use plain messages.create
+        # with a JSON-only instruction and validate the response ourselves.
         trimmed = _strip_html_noise(html)
-        resp = self._claude.messages.parse(
+        resp = self._claude.messages.create(
             model="claude-opus-4-7",
-            max_tokens=1024,
+            max_tokens=2048,
             system=[
                 {
                     "type": "text",
-                    "text": MC_PARSE_SYSTEM_PROMPT,
+                    "text": MC_PARSE_SYSTEM_PROMPT + "\n\n" + _JSON_INSTRUCTIONS,
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
@@ -319,15 +344,18 @@ class MCSource:
                 {
                     "role": "user",
                     "content": (
-                        "Extract the first CR Record from this HTML. "
-                        "Return found=false if no record card is present.\n\n"
+                        "Extract the first CR Record from this HTML. Return a "
+                        "single JSON object only. Use found=false if no record "
+                        "card is present.\n\n"
                         f"<html>\n{trimmed}\n</html>"
                     ),
                 }
             ],
-            output_format=MCParsed,
         )
-        return resp.parsed_output
+        text = "".join(
+            b.text for b in resp.content if getattr(b, "type", None) == "text"
+        ).strip()
+        return MCParsed.model_validate_json(_extract_json_object(text))
 
     def _maybe_dump(
         self, unified_number: str, html: str, suffix: str = "result"
@@ -488,6 +516,40 @@ def _first_text_input_excluding(
 # ---------------------------------------------------------------------------
 # HTML preprocessing for the Claude parser
 # ---------------------------------------------------------------------------
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the first balanced {...} block in `text`.
+
+    Claude occasionally wraps JSON output in a ```json fence or adds a short
+    explanatory sentence despite instructions. Walk the string and return
+    the first top-level object so `model_validate_json` gets a clean input.
+    """
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"no JSON object in Claude response: {text[:200]!r}")
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError(f"unterminated JSON object in Claude response: {text[:200]!r}")
 
 
 def _strip_html_noise(html: str) -> str:
