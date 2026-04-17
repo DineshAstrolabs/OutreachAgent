@@ -797,14 +797,28 @@ def _mcparsed_to_mcdata(unified_number: str, parsed: MCParsed) -> MCData:
     # entity_type, run our own classifier on the raw string so downstream
     # gates still work.
     entity_type = _parse_entity_type(parsed.entity_type or parsed.business_type_raw or "")
+
+    cr_issue_date = _parse_date(parsed.cr_issue_date)
+    cr_expiry_date = _parse_date(parsed.cr_expiry_date)
+    # MC's public CR card doesn't always print an expiry date — Saudi CRs
+    # are renewed annually, so when expiry is missing we derive it as
+    # Issue date + 1 year. This is the rule MC itself applies on the
+    # licensed-CR view, and it feeds data point #3 (CR Expiry scoring).
+    if cr_expiry_date is None and cr_issue_date is not None:
+        cr_expiry_date = _add_one_year(cr_issue_date)
+        log.info(
+            "[MC] derived cr_expiry_date = %s (issue %s + 1 year)",
+            cr_expiry_date, cr_issue_date,
+        )
+
     return MCData(
         unified_number=unified_number,
         company_legal_name=parsed.company_legal_name,
         cr_status=_parse_status(parsed.cr_status),
         entity_type=entity_type,
         cr_number=_s(parsed.cr_number),
-        cr_issue_date=_parse_date(parsed.cr_issue_date),
-        cr_expiry_date=_parse_date(parsed.cr_expiry_date),
+        cr_issue_date=cr_issue_date,
+        cr_expiry_date=cr_expiry_date,
         business_type_raw=_s(parsed.business_type_raw),
         company_duration_years=_i(parsed.company_duration_years),
         business_activity_isic=_s(parsed.business_activity_isic),
@@ -847,3 +861,14 @@ def _parse_date(s: str | None):
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _add_one_year(d):
+    """d + 1 year, with a Feb-29 → Feb-28 guard for non-leap years."""
+    from datetime import date
+
+    try:
+        return d.replace(year=d.year + 1)
+    except ValueError:
+        # Feb 29 in a leap year → roll back to Feb 28 next year.
+        return date(d.year + 1, d.month, 28)
