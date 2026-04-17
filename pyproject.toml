@@ -25,6 +25,9 @@ dev = [
 [project.scripts]
 outreach-agent = "outreach_agent.cli:main"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
