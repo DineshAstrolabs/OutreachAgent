@@ -137,6 +137,7 @@ class MCSource:
 
         hidden_fields = _collect_hidden_inputs(soup)
         form_fields = _locate_form_fields(soup)
+        _log_form_landscape(soup)
 
         if not form_fields.unified_number or not form_fields.captcha or not form_fields.submit:
             log.warning(
@@ -146,6 +147,7 @@ class MCSource:
                 form_fields.captcha,
                 form_fields.submit,
             )
+            self._maybe_dump(unified_number, page.text, suffix="form")
             return _not_found(unified_number)
 
         captcha_img = soup.select_one("img[src*='BotDetectCaptcha'], img[id*='Captcha']")
@@ -234,12 +236,17 @@ class MCSource:
         )
         return resp.parsed_output
 
-    def _maybe_dump(self, unified_number: str, html: str) -> None:
+    def _maybe_dump(
+        self, unified_number: str, html: str, suffix: str = "result"
+    ) -> None:
         if not self.save_debug_html:
             return
         try:
             DEBUG_DIR.mkdir(exist_ok=True)
-            path = DEBUG_DIR / f"mc-{unified_number}-{int(datetime.utcnow().timestamp())}.html"
+            path = (
+                DEBUG_DIR
+                / f"mc-{unified_number}-{int(datetime.utcnow().timestamp())}-{suffix}.html"
+            )
             path.write_text(html, encoding="utf-8")
             log.info("dumped MC response to %s for inspection", path)
         except OSError as exc:
@@ -330,6 +337,41 @@ def _find_submit_by_suffix(soup: BeautifulSoup, suffixes: tuple[str, ...]) -> st
         if any(name.endswith(s) or s in name for s in suffixes):
             return name
     return None
+
+
+def _log_form_landscape(soup: BeautifulSoup) -> None:
+    """Log every visible input, radio group, and select on the page. When MC
+    rotates field names or adds a search-type selector, this is the quickest
+    way to see what's actually on the page without eyeballing raw HTML."""
+    text_inputs = []
+    for inp in soup.select("input"):
+        t = (inp.get("type") or "text").lower()
+        if t in ("hidden", "image"):
+            continue
+        name = inp.get("name") or ""
+        input_id = inp.get("id") or ""
+        if not name:
+            continue
+        label = _label_for(soup, input_id)
+        text_inputs.append(f"[{t}] name={name!s} id={input_id!s} label={label!r}")
+    if text_inputs:
+        log.info("MC form visible inputs:\n  %s", "\n  ".join(text_inputs))
+
+    selects = []
+    for sel in soup.select("select"):
+        name = sel.get("name") or ""
+        options = [o.get_text(strip=True) for o in sel.select("option")]
+        if name:
+            selects.append(f"name={name!s} options={options!r}")
+    if selects:
+        log.info("MC form selects:\n  %s", "\n  ".join(selects))
+
+
+def _label_for(soup: BeautifulSoup, input_id: str) -> str:
+    if not input_id:
+        return ""
+    lbl = soup.select_one(f"label[for='{input_id}']")
+    return lbl.get_text(" ", strip=True) if lbl else ""
 
 
 def _first_text_input_excluding(
