@@ -107,6 +107,7 @@ class MCSource:
         anthropic_api_key: str | None = None,
         http: httpx.Client | None = None,
         save_debug_html: bool = True,
+        captcha_attempts: int = 3,
     ):
         self.captcha = captcha_solver
         self.http = http or httpx.Client(
@@ -121,6 +122,7 @@ class MCSource:
             },
         )
         self.save_debug_html = save_debug_html
+        self.captcha_attempts = max(1, captcha_attempts)
 
         self._claude = None
         if anthropic_api_key:
@@ -132,6 +134,32 @@ class MCSource:
                 log.warning("anthropic SDK missing; MC parser will use regex fallback")
 
     def fetch(self, unified_number: str) -> MCData:
+        # Captchas get misread. Retry up to `captcha_attempts` times with a
+        # fresh page + VCID on every attempt, so a single OCR fluke doesn't
+        # produce a false NOT_FOUND.
+        last_html: str | None = None
+        for attempt in range(1, self.captcha_attempts + 1):
+            log.info("[MC] ===== attempt %d/%d =====", attempt, self.captcha_attempts)
+            parsed, html = self._attempt(unified_number)
+            last_html = html
+            if parsed is None:
+                # Hard failure (missing form fields / captcha image missing).
+                return _not_found(unified_number)
+            if parsed.found:
+                return _mcparsed_to_mcdata(unified_number, parsed)
+            log.info(
+                "[MC] attempt %d: no CR record card — likely bad captcha, will retry",
+                attempt,
+            )
+
+        log.info("[MC] exhausted %d captcha attempts; giving up", self.captcha_attempts)
+        if last_html is not None:
+            self._maybe_dump(unified_number, last_html)
+        return _not_found(unified_number)
+
+    def _attempt(self, unified_number: str) -> tuple[MCParsed | None, str | None]:
+        """Single GET → solve → POST → parse cycle. Returns (parsed, html).
+        parsed is None for hard failures; html is None when we didn't POST."""
         log.info("[MC] step 1: GET initial form page %s", MC_URL)
         t0 = time.monotonic()
         page = self.http.get(MC_URL)
@@ -154,6 +182,9 @@ class MCSource:
             form_fields.submit,
         )
         _log_form_landscape(soup)
+        vcid = _find_vcid(hidden_fields)
+        if vcid:
+            log.info("[MC] BotDetect VCID from hidden field: %s=%s", vcid[0], vcid[1])
 
         if not form_fields.unified_number or not form_fields.captcha or not form_fields.submit:
             log.warning(
@@ -164,13 +195,13 @@ class MCSource:
                 form_fields.submit,
             )
             self._maybe_dump(unified_number, page.text, suffix="form")
-            return _not_found(unified_number)
+            return None, page.text
 
         log.info("[MC] step 3: locating captcha image")
         captcha_img = soup.select_one("img[src*='BotDetectCaptcha'], img[id*='Captcha']")
         if captcha_img is None:
             log.warning("[MC] captcha image not located on page; MC may have changed")
-            return _not_found(unified_number)
+            return None, page.text
 
         img_src = captcha_img.get("src", "")
         img_url = img_src if img_src.startswith("http") else f"{MC_ORIGIN}{img_src}"
@@ -217,11 +248,12 @@ class MCSource:
         )
 
         log.info("[MC] step 8: parsing result HTML")
-        return self._parse_result(unified_number, submit.text)
+        parsed = self._parse_html(submit.text)
+        return parsed, submit.text
 
     # ---- result parsing --------------------------------------------------
 
-    def _parse_result(self, unified_number: str, html: str) -> MCData:
+    def _parse_html(self, html: str) -> MCParsed:
         parsed: MCParsed | None = None
 
         if self._claude is not None:
@@ -245,22 +277,7 @@ class MCSource:
                 parsed.found, parsed.cr_status, parsed.company_legal_name,
             )
 
-        if not parsed.found:
-            log.info("[MC] no CR record card detected; dumping HTML for inspection")
-            self._maybe_dump(unified_number, html)
-            return _not_found(unified_number)
-
-        return MCData(
-            unified_number=unified_number,
-            company_legal_name=parsed.company_legal_name,
-            cr_status=_parse_status(parsed.cr_status),
-            entity_type=_parse_entity_type(parsed.entity_type),
-            cr_expiry_date=_parse_date(parsed.cr_expiry_date),
-            business_activity_isic=parsed.business_activity_isic,
-            registered_capital_sar=parsed.registered_capital_sar,
-            city=parsed.city,
-            region=parsed.region,
-        )
+        return parsed
 
     def _parse_with_claude(self, html: str) -> MCParsed:
         # Keep payload tight: strip tags we don't need for content extraction.
@@ -364,6 +381,7 @@ def _locate_form_fields(soup: BeautifulSoup) -> _FormFields:
             "txtNationalNo",
             "txtCRNumber",
             "NationalNumberTextBox",
+            "txtCRName",       # MC's actual field name — accepts CR# / Unified# / name
             "txtSearch",
         ),
     )
@@ -595,6 +613,29 @@ def _not_found(unified_number: str) -> MCData:
         cr_status=CRStatus.NOT_FOUND,
         entity_type=EntityType.UNKNOWN,
     )
+
+
+def _mcparsed_to_mcdata(unified_number: str, parsed: MCParsed) -> MCData:
+    return MCData(
+        unified_number=unified_number,
+        company_legal_name=parsed.company_legal_name,
+        cr_status=_parse_status(parsed.cr_status),
+        entity_type=_parse_entity_type(parsed.entity_type),
+        cr_expiry_date=_parse_date(parsed.cr_expiry_date),
+        business_activity_isic=parsed.business_activity_isic,
+        registered_capital_sar=parsed.registered_capital_sar,
+        city=parsed.city,
+        region=parsed.region,
+    )
+
+
+def _find_vcid(hidden_fields: dict[str, str]) -> tuple[str, str] | None:
+    """BotDetect ships a hidden LBD_VCID_* field; MC must see the same VCID
+    on POST that was set by the GET that rendered the captcha image."""
+    for name, value in hidden_fields.items():
+        if name.startswith("LBD_VCID_") or name.startswith("BDC_VCID_"):
+            return (name, value)
+    return None
 
 
 def _parse_status(s: str) -> CRStatus:
