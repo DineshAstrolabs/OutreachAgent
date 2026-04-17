@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from .captcha import TwoCaptchaClient
+from .captcha import build_captcha_solver
 from .config import Config
 from .crm.hubspot import HubSpotWriter, StubHubSpotWriter
 from .pipeline import LinkedInChampionAdapter, Pipeline
@@ -75,8 +75,6 @@ def _build_stub(config: Config) -> Pipeline:
 
 
 def _build_live(config: Config) -> Pipeline:
-    if not config.twocaptcha_api_key:
-        raise RuntimeError("live mode requires TWOCAPTCHA_API_KEY")
     if not config.anthropic_api_key:
         raise RuntimeError("live mode requires ANTHROPIC_API_KEY")
     if config.apollo_enabled and not config.apollo_api_key:
@@ -90,7 +88,11 @@ def _build_live(config: Config) -> Pipeline:
             "live mode with HubSpot enabled requires HUBSPOT_API_TOKEN"
         )
 
-    captcha = TwoCaptchaClient(config.twocaptcha_api_key)
+    captcha = build_captcha_solver(
+        provider=config.captcha_provider,
+        twocaptcha_api_key=config.twocaptcha_api_key,
+        anthropic_api_key=config.anthropic_api_key,
+    )
 
     web_sources = []
     if config.apollo_enabled:

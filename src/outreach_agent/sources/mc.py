@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 
-from ..captcha import TwoCaptchaClient
+from ..captcha import CaptchaSolver
 from ..models import CRStatus, EntityType, MCData
 
 log = logging.getLogger(__name__)
@@ -35,10 +35,11 @@ MC_URL = "https://mc.gov.sa/en/eservices/Pages/Commercial-data.aspx"
 
 
 class MCSource:
-    """Live MC scraper. Requires a 2Captcha API key."""
+    """Live MC scraper. Requires a CaptchaSolver — see captcha.py for the
+    available providers (2Captcha / Tesseract / Anthropic vision)."""
 
-    def __init__(self, captcha_client: TwoCaptchaClient, http: httpx.Client | None = None):
-        self.captcha = captcha_client
+    def __init__(self, captcha_solver: CaptchaSolver, http: httpx.Client | None = None):
+        self.captcha = captcha_solver
         self.http = http or httpx.Client(
             timeout=30.0,
             follow_redirects=True,

@@ -22,6 +22,12 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5",
 ]
+# Open-source captcha fallback. Also needs the `tesseract` system binary
+# (brew install tesseract / apt-get install tesseract-ocr).
+tesseract = [
+    "pytesseract>=0.3.10",
+    "pillow>=10.0",
+]
 
 [project.scripts]
 outreach-agent = "outreach_agent.cli:main"

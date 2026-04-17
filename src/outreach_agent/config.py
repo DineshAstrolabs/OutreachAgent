@@ -31,6 +31,10 @@ class Config:
     hubspot_api_token: str | None
     hubspot_portal_id: str | None
 
+    # Captcha provider: "twocaptcha" (paid) | "tesseract" (open-source OCR) |
+    # "anthropic" (Claude vision). Default is twocaptcha.
+    captcha_provider: str = "twocaptcha"
+
     # Integration toggles. When false, that integration is skipped and (for
     # Apollo + Crunchbase) Anthropic/Claude takes over the research via
     # web_search. HubSpot has no fallback — the result is just not persisted.
@@ -52,6 +56,7 @@ class Config:
             apollo_enabled=_env_flag("APOLLO_ENABLED", default=True),
             crunchbase_enabled=_env_flag("CRUNCHBASE_ENABLED", default=True),
             hubspot_enabled=_env_flag("HUBSPOT_ENABLED", default=True),
+            captcha_provider=(os.getenv("CAPTCHA_PROVIDER") or "twocaptcha").strip().lower(),
         )
 
     @property

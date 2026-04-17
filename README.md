@@ -110,6 +110,20 @@ had before. Apollo covers Apollo's native org/people endpoints; growth %
 (#13) is left unscored in live mode because Apollo's free tier doesn't expose
 historical headcount snapshots.
 
+### Captcha provider
+
+MC's lookup is gated by a short image captcha. Pick a solver via
+`CAPTCHA_PROVIDER`:
+
+| Provider | Flag value | Needs | Notes |
+|---|---|---|---|
+| 2Captcha (default) | `twocaptcha` | `TWOCAPTCHA_API_KEY` | Paid human-solver service, ~2-5s per solve, highest accuracy |
+| Tesseract | `tesseract` | `pip install 'outreach-agent[tesseract]'` + `brew install tesseract` (macOS) or `apt-get install tesseract-ocr` (Debian) | Pure open source, no API keys, 50-80% accuracy on simple alphanumeric |
+| Claude vision | `anthropic` | `ANTHROPIC_API_KEY` (reused) | No extra dep; Claude reads the image directly |
+
+All three implement the same `CaptchaSolver` protocol — swap freely without
+touching the MC scraper.
+
 ### Disabling integrations
 
 Three env flags bypass specific integrations without touching code.
