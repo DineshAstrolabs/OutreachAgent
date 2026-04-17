@@ -21,6 +21,35 @@ def _setup_logging(level: str) -> None:
         level=level.upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Keep noisy httpx request logs at DEBUG unless user asked for DEBUG.
+    if level.upper() != "DEBUG":
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def _log_config_summary(config) -> None:
+    log = logging.getLogger("outreach_agent.cli")
+    log.info(
+        "config: mode=%s captcha_provider=%s apollo=%s crunchbase=%s hubspot=%s "
+        "anthropic_key=%s apollo_key=%s crunchbase_key=%s hubspot_token=%s twocaptcha_key=%s",
+        config.mode,
+        config.captcha_provider,
+        config.apollo_enabled,
+        config.crunchbase_enabled,
+        config.hubspot_enabled,
+        _mask(config.anthropic_api_key),
+        _mask(config.apollo_api_key),
+        _mask(config.crunchbase_api_key),
+        _mask(config.hubspot_api_token),
+        _mask(config.twocaptcha_api_key),
+    )
+
+
+def _mask(value: str | None) -> str:
+    if not value:
+        return "—"
+    if len(value) <= 8:
+        return "set"
+    return f"{value[:4]}…{value[-2:]}"
 
 
 def _validate_unified_number(unified_number: str) -> str:
@@ -39,6 +68,7 @@ def main(ctx: click.Context, log_level: str | None) -> None:
     """AstroLabs Post-Setup Company Qualification Agent."""
     config = Config.load()
     _setup_logging(log_level or config.log_level)
+    _log_config_summary(config)
     ctx.ensure_object(dict)
     ctx.obj["config"] = config
 
@@ -53,6 +83,7 @@ def score(ctx: click.Context, unified_number: str, dry_run: bool, json_out: str 
     un = _validate_unified_number(unified_number)
     config = ctx.obj["config"]
     if dry_run:
+        logging.getLogger("outreach_agent.cli").info("--dry-run flag set; forcing stub mode")
         config = Config(**{**asdict(config), "mode": "stub"})
 
     pipeline = build_pipeline(config)
@@ -60,6 +91,7 @@ def score(ctx: click.Context, unified_number: str, dry_run: bool, json_out: str 
 
     click.echo(_format_result(result))
     if json_out:
+        logging.getLogger("outreach_agent.cli").info("writing result JSON to %s", json_out)
         Path(json_out).write_text(json.dumps(_result_to_dict(result), indent=2, default=str))
 
 

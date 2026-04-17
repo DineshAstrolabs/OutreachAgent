@@ -93,12 +93,24 @@ class AnthropicNewsSource:
         self.model = model
 
     def enrich(self, company_name: str, web: WebIntelligence) -> None:
+        log.info("[anthropic_news] researching %r via Claude + web_search", company_name)
+        import time as _t
+        t0 = _t.monotonic()
         try:
             signals = self._research(company_name)
         except Exception as exc:
-            log.warning("anthropic_news failed for %s: %s", company_name, exc)
+            log.warning("[anthropic_news] failed for %s: %s", company_name, exc)
             web.sources_failed.append(self.name)
             return
+        log.info(
+            "[anthropic_news] ok in %.2fs: ksa_news=%s general_news=%s funding=%s "
+            "funding+ksa=%s new_gm=%s senior_hire=%s partnership=%s",
+            _t.monotonic() - t0,
+            signals.ksa_news_last_6mo, signals.general_news_last_6mo,
+            signals.funding_last_12mo, signals.funding_mentions_ksa,
+            signals.new_gm_within_6mo, signals.senior_hire_within_6mo,
+            signals.partnership_with_saudi_entity,
+        )
 
         web.ksa_news_last_6mo = signals.ksa_news_last_6mo
         # Mutually exclusive per the rubric; enforce client-side too.
@@ -112,6 +124,7 @@ class AnthropicNewsSource:
         web.sources_seen.append(self.name)
 
     def _research(self, company_name: str) -> CompanySignals:
+        log.info("[anthropic_news] POST /v1/messages model=%s tools=web_search", self.model)
         response = self.client.messages.parse(
             model=self.model,
             max_tokens=4096,

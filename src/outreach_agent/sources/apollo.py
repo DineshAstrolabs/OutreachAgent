@@ -76,12 +76,19 @@ class ApolloSource:
     # ---- WebIntelligenceSourceP -------------------------------------------
 
     def enrich(self, company_name: str, web: WebIntelligence) -> None:
+        log.info("[apollo] enrich %r", company_name)
         try:
             org = self._enrich_organization(company_name)
             if not org:
-                log.info("apollo: no organization match for %s", company_name)
+                log.info("[apollo] no organization match for %s", company_name)
                 web.sources_failed.append(self.name)
                 return
+            log.info(
+                "[apollo] matched org id=%s name=%r size=%s locations=%d",
+                org.get("id"), org.get("name"),
+                org.get("estimated_num_employees"),
+                len(org.get("locations") or []),
+            )
 
             web.global_headcount = org.get("estimated_num_employees")
 
@@ -96,26 +103,32 @@ class ApolloSource:
 
             # Open positions + role-title fingerprinting via people search
             # filtered to KSA.
+            log.info("[apollo] searching KSA open roles for org %s", org.get("id"))
             open_roles = self._search_ksa_open_roles(org.get("id"))
             web.ksa_open_vacancies = len(open_roles)
+            log.info("[apollo] KSA open roles: %d", len(open_roles))
             titles = " | ".join(r.get("title", "").lower() for r in open_roles)
             web.ksa_saudization_quota_roles = any(t in titles for t in QUOTA_TITLES)
             web.ksa_generic_roles = any(t in titles for t in GENERIC_TITLES)
 
             web.sources_seen.append(self.name)
         except Exception as exc:
-            log.warning("apollo enrich failed: %s", exc)
+            log.warning("[apollo] enrich failed: %s", exc)
             web.sources_failed.append(self.name)
 
     # ---- Champion lookup --------------------------------------------------
 
     def find_champions(self, company_name: str) -> Champions:
+        log.info("[apollo] find_champions %r", company_name)
         try:
             org = self._enrich_organization(company_name)
             if not org:
+                log.info("[apollo] no org match; empty champions")
                 return Champions()
 
+            log.info("[apollo] searching admin champion (titles: %s)", ADMIN_TITLES)
             admin = self._first_match(org.get("id"), ADMIN_TITLES)
+            log.info("[apollo] searching GM champion (titles: %s)", GM_TITLES)
             gm = self._first_match(org.get("id"), GM_TITLES)
 
             admin_champion = _to_champion(admin) if admin else None
@@ -135,11 +148,13 @@ class ApolloSource:
     def _enrich_organization(self, company_name: str) -> dict | None:
         """Apollo's organization enrich endpoint takes a name + (optional) domain.
         We pass just the name and let Apollo match."""
+        log.info("[apollo] POST /api/v1/organizations/enrich name=%r", company_name)
         resp = self.http.post(
             f"{self.base_url}/api/v1/organizations/enrich",
             json={"name": company_name},
         )
         resp.raise_for_status()
+        log.info("[apollo] organizations/enrich → %d", resp.status_code)
         return (resp.json() or {}).get("organization")
 
     def _search_ksa_open_roles(self, org_id: str | None) -> list[dict]:

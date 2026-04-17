@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -131,17 +132,32 @@ class MCSource:
                 log.warning("anthropic SDK missing; MC parser will use regex fallback")
 
     def fetch(self, unified_number: str) -> MCData:
+        log.info("[MC] step 1: GET initial form page %s", MC_URL)
+        t0 = time.monotonic()
         page = self.http.get(MC_URL)
         page.raise_for_status()
+        log.info("[MC] form page: %d bytes in %.2fs", len(page.text), time.monotonic() - t0)
         soup = BeautifulSoup(page.text, "html.parser")
 
+        log.info("[MC] step 2: parsing hidden inputs + locating form fields")
         hidden_fields = _collect_hidden_inputs(soup)
         form_fields = _locate_form_fields(soup)
+        log.info(
+            "[MC] hidden fields collected: %d (keys: %s)",
+            len(hidden_fields),
+            sorted(hidden_fields.keys())[:12],
+        )
+        log.info(
+            "[MC] form fields resolved: unified=%s captcha=%s submit=%s",
+            form_fields.unified_number,
+            form_fields.captcha,
+            form_fields.submit,
+        )
         _log_form_landscape(soup)
 
         if not form_fields.unified_number or not form_fields.captcha or not form_fields.submit:
             log.warning(
-                "could not locate all MC form fields (unified=%s, captcha=%s, submit=%s) — "
+                "[MC] could not locate all form fields (unified=%s, captcha=%s, submit=%s) — "
                 "page structure likely changed",
                 form_fields.unified_number,
                 form_fields.captcha,
@@ -150,22 +166,41 @@ class MCSource:
             self._maybe_dump(unified_number, page.text, suffix="form")
             return _not_found(unified_number)
 
+        log.info("[MC] step 3: locating captcha image")
         captcha_img = soup.select_one("img[src*='BotDetectCaptcha'], img[id*='Captcha']")
         if captcha_img is None:
-            log.warning("captcha image not located on page; MC may have changed")
+            log.warning("[MC] captcha image not located on page; MC may have changed")
             return _not_found(unified_number)
 
         img_src = captcha_img.get("src", "")
         img_url = img_src if img_src.startswith("http") else f"{MC_ORIGIN}{img_src}"
-        img_bytes = self.http.get(img_url, headers={"Referer": MC_URL}).content
-        captcha_answer = self.captcha.solve_image(img_bytes)
-        log.info("captcha solved to %r", captcha_answer)
+        log.info("[MC] captcha image URL: %s", img_url)
 
+        log.info("[MC] step 4: downloading captcha image")
+        t0 = time.monotonic()
+        img_bytes = self.http.get(img_url, headers={"Referer": MC_URL}).content
+        log.info("[MC] captcha image: %d bytes in %.2fs", len(img_bytes), time.monotonic() - t0)
+
+        log.info("[MC] step 5: solving captcha via provider %r", self.captcha.name)
+        t0 = time.monotonic()
+        captcha_answer = self.captcha.solve_image(img_bytes)
+        log.info("[MC] captcha solved to %r in %.2fs", captcha_answer, time.monotonic() - t0)
+
+        log.info("[MC] step 6: composing form payload")
         payload = dict(hidden_fields)
         payload[form_fields.unified_number] = unified_number
         payload[form_fields.captcha] = captcha_answer
         payload[form_fields.submit] = "Search"
+        log.info(
+            "[MC] payload: %d fields, unified-field=%s, captcha-field=%s, submit-field=%s",
+            len(payload),
+            form_fields.unified_number,
+            form_fields.captcha,
+            form_fields.submit,
+        )
 
+        log.info("[MC] step 7: POST form to %s", MC_URL)
+        t0 = time.monotonic()
         submit = self.http.post(
             MC_URL,
             data=payload,
@@ -176,7 +211,12 @@ class MCSource:
             },
         )
         submit.raise_for_status()
+        log.info(
+            "[MC] response: status=%d bytes=%d in %.2fs",
+            submit.status_code, len(submit.text), time.monotonic() - t0,
+        )
 
+        log.info("[MC] step 8: parsing result HTML")
         return self._parse_result(unified_number, submit.text)
 
     # ---- result parsing --------------------------------------------------
@@ -185,15 +225,28 @@ class MCSource:
         parsed: MCParsed | None = None
 
         if self._claude is not None:
+            log.info("[MC] parsing via Claude (claude-opus-4-7)")
+            t0 = time.monotonic()
             try:
                 parsed = self._parse_with_claude(html)
+                log.info(
+                    "[MC] Claude parse ok in %.2fs: found=%s status=%s name=%r",
+                    time.monotonic() - t0,
+                    parsed.found, parsed.cr_status, parsed.company_legal_name,
+                )
             except Exception as exc:
-                log.warning("Claude MC parser failed: %s — falling back to regex", exc)
+                log.warning("[MC] Claude MC parser failed: %s — falling back to regex", exc)
 
         if parsed is None:
+            log.info("[MC] parsing via regex fallback")
             parsed = _parse_with_regex(html)
+            log.info(
+                "[MC] regex parse: found=%s status=%s name=%r",
+                parsed.found, parsed.cr_status, parsed.company_legal_name,
+            )
 
         if not parsed.found:
+            log.info("[MC] no CR record card detected; dumping HTML for inspection")
             self._maybe_dump(unified_number, html)
             return _not_found(unified_number)
 

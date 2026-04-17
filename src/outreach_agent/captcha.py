@@ -59,6 +59,7 @@ class TwoCaptchaClient:
         self.timeout = timeout
 
     def solve_image(self, image_bytes: bytes) -> str:
+        log.info("[2captcha] submitting image (%d bytes)", len(image_bytes))
         b64 = base64.b64encode(image_bytes).decode("ascii")
 
         with httpx.Client(timeout=self.timeout) as client:
@@ -69,10 +70,13 @@ class TwoCaptchaClient:
             if submit.get("status") != 1:
                 raise CaptchaError(f"submit failed: {submit!r}")
             captcha_id = submit["request"]
+            log.info("[2captcha] submitted, id=%s, polling…", captcha_id)
 
             deadline = time.time() + self.timeout
+            polls = 0
             while time.time() < deadline:
                 time.sleep(3)
+                polls += 1
                 poll = client.get(
                     f"{_TWOCAPTCHA_BASE}/res.php",
                     params={
@@ -83,6 +87,7 @@ class TwoCaptchaClient:
                     },
                 ).json()
                 if poll.get("status") == 1:
+                    log.info("[2captcha] solved after %d polls", polls)
                     return poll["request"]
                 if poll.get("request") != "CAPCHA_NOT_READY":
                     raise CaptchaError(f"poll failed: {poll!r}")
@@ -124,6 +129,7 @@ class TesseractSolver:
             ) from exc
 
     def solve_image(self, image_bytes: bytes) -> str:
+        log.info("[tesseract] solving image (%d bytes)", len(image_bytes))
         import pytesseract
         from PIL import Image, ImageFilter, ImageOps
 
@@ -132,6 +138,7 @@ class TesseractSolver:
         except Exception as exc:
             raise CaptchaError(f"failed to decode captcha image: {exc}") from exc
 
+        log.info("[tesseract] preprocess: grayscale → autocontrast → threshold(140) → median(3)")
         # Preprocess: grayscale → autocontrast → threshold → denoise. These
         # transforms measurably improve Tesseract accuracy on typical MC-style
         # short-alphanumeric captchas.
@@ -142,6 +149,7 @@ class TesseractSolver:
 
         text = pytesseract.image_to_string(img, config=_TESS_CONFIG)
         cleaned = "".join(c for c in text.strip() if c.isalnum())
+        log.info("[tesseract] raw=%r cleaned=%r", text.strip(), cleaned)
         if not cleaned:
             raise CaptchaError("tesseract returned empty OCR result")
         return cleaned
@@ -181,6 +189,10 @@ class AnthropicVisionSolver:
     def solve_image(self, image_bytes: bytes) -> str:
         b64 = base64.b64encode(image_bytes).decode("ascii")
         media_type = _sniff_media_type(image_bytes)
+        log.info(
+            "[anthropic-vision] POST /v1/messages model=%s media_type=%s bytes=%d",
+            self.model, media_type, len(image_bytes),
+        )
 
         response = self.client.messages.create(
             model=self.model,
@@ -204,7 +216,9 @@ class AnthropicVisionSolver:
         )
 
         text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
-        cleaned = "".join(c for c in "".join(text_parts).strip() if c.isalnum())
+        raw = "".join(text_parts).strip()
+        cleaned = "".join(c for c in raw if c.isalnum())
+        log.info("[anthropic-vision] raw=%r cleaned=%r", raw, cleaned)
         if not cleaned:
             raise CaptchaError("anthropic vision returned empty result")
         return cleaned
@@ -239,6 +253,7 @@ def build_captcha_solver(
     or system dependencies. Defaults to twocaptcha on empty input.
     """
     provider = (provider or "twocaptcha").strip().lower()
+    log.info("[captcha] building solver for provider=%r", provider)
 
     if provider == "twocaptcha":
         if not twocaptcha_api_key:

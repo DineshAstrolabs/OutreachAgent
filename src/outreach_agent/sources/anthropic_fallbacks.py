@@ -94,12 +94,22 @@ class AnthropicCompanySource:
         self.model = model
 
     def enrich(self, company_name: str, web: WebIntelligence) -> None:
+        log.info("[anthropic_company] researching %r via Claude + web_search", company_name)
+        import time as _t
+        t0 = _t.monotonic()
         try:
             intel = self._research(company_name)
         except Exception as exc:
-            log.warning("anthropic_company failed for %s: %s", company_name, exc)
+            log.warning("[anthropic_company] failed for %s: %s", company_name, exc)
             web.sources_failed.append(self.name)
             return
+        log.info(
+            "[anthropic_company] ok in %.2fs: ksa_office=%s ksa_hc=%s global_hc=%s "
+            "vacancies=%s type=%s model=%s",
+            _t.monotonic() - t0,
+            intel.has_ksa_office_listed, intel.ksa_headcount, intel.global_headcount,
+            intel.ksa_open_vacancies, intel.company_type, intel.business_model,
+        )
 
         web.has_ksa_office_listed = intel.has_ksa_office_listed
         web.ksa_saudization_quota_roles = intel.ksa_saudization_quota_roles
@@ -227,11 +237,21 @@ class AnthropicChampionSource:
         self.model = model
 
     def find(self, company_name: str) -> Champions:
+        log.info("[anthropic_champions] finding champions for %r via Claude + web_search", company_name)
+        import time as _t
+        t0 = _t.monotonic()
         try:
             bundle = self._research(company_name)
         except Exception as exc:
-            log.warning("anthropic_champions failed for %s: %s", company_name, exc)
+            log.warning("[anthropic_champions] failed for %s: %s", company_name, exc)
             return Champions()
+        log.info(
+            "[anthropic_champions] ok in %.2fs: admin=%s gm=%s admin_overwhelmed=%s gm_new=%s",
+            _t.monotonic() - t0,
+            bundle.admin.name if bundle.admin else None,
+            bundle.gm.name if bundle.gm else None,
+            bundle.admin_is_overwhelmed, bundle.gm_is_new,
+        )
 
         return Champions(
             admin=_to_champion(bundle.admin),

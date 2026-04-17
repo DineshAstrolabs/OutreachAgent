@@ -155,6 +155,12 @@ class HubSpotWriter:
 
     def write(self, result: QualificationResult) -> str:
         props = to_hubspot_properties(result)
+        log.info(
+            "[hubspot] write: unified=%s class=%s score=%s props=%d",
+            result.unified_number, result.classification.value,
+            result.total_score, len(props),
+        )
+        log.info("[hubspot] searching existing company by unified_number")
         search = self.http.post(
             "/crm/v3/objects/companies/search",
             json={
@@ -171,17 +177,21 @@ class HubSpotWriter:
 
         if matches:
             company_id = matches[0]["id"]
+            log.info("[hubspot] existing company id=%s → PATCH update", company_id)
             resp = self.http.patch(
                 f"/crm/v3/objects/companies/{company_id}",
                 json={"properties": props},
             )
         else:
+            log.info("[hubspot] no existing match → POST create")
             resp = self.http.post(
                 "/crm/v3/objects/companies",
                 json={"properties": props},
             )
         resp.raise_for_status()
-        return resp.json()["id"]
+        company_id = resp.json()["id"]
+        log.info("[hubspot] ✓ write ok, company_id=%s", company_id)
+        return company_id
 
 
 class StubHubSpotWriter:
