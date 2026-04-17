@@ -2,14 +2,16 @@
 
 **Post-Setup Company Qualification Agent** for AstroLabs.
 
-Takes a Saudi Unified Number (7xxxxxxx), pulls public MC CR data, scrapes web
-intelligence (LinkedIn, Crunchbase, Google News, job boards), identifies
-internal champions, scores the company on 17 data points, classifies the lead
+Takes a Saudi Unified Number (7xxxxxxx), pulls public MC CR data, enriches via
+Apollo.io + Crunchbase + Claude-powered news research, identifies internal
+champions, scores the company on 17 data points, classifies the lead
 (CRITICAL / HOT / WARM / COOL / COLD), and writes the result to HubSpot.
 
 ## Quick start
 
 ```bash
+python -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip setuptools
 pip install -e .
 cp .env.example .env   # fill in API keys (or leave blank to use stubs)
 outreach-agent score 7012345678
@@ -19,6 +21,24 @@ outreach-agent batch leads.csv --out results.json
 Run `outreach-agent score 7012345678 --dry-run` to execute the full pipeline
 against fixture data — no external credentials required.
 
+### Troubleshooting: `ModuleNotFoundError: No module named 'outreach_agent'`
+
+This means the console-script shim was installed but the package body isn't
+on `sys.path` — usually a stale editable install from before the src-layout
+config was finalized. Two fixes, in order:
+
+```bash
+# 1. Force-reinstall and rebuild the .pth file.
+pip install -e . --force-reinstall --no-deps
+
+# 2. Or bypass the shim entirely — `__main__.py` lets you run the module
+#    directly, which works as long as the package imports at all.
+python -m outreach_agent score 7012345678
+```
+
+Recreating the venv (`rm -rf .venv && python -m venv .venv`) is the
+nuclear option and always works.
+
 ## Architecture
 
 ```
@@ -26,9 +46,9 @@ Unified Number ──► MC CR scraper ──► Hard gates ──┬──► D
                         │                          │
                         ▼                          ▼
                    Company name            Web intel (parallel):
-                        │                   • LinkedIn Company/Jobs/People
-                        │                   • Crunchbase
-                        │                   • Google News / SerpAPI
+                        │                   • Apollo.io (org + champions)
+                        │                   • Crunchbase (funding)
+                        │                   • Claude API + web_search (news)
                         │                   • Bayt / Indeed
                         │                   • Company website
                         │                          │
@@ -75,13 +95,20 @@ vars in `.env`.
 
 | Source | Stub | Real |
 |---|---|---|
-| MC CR Lookup | `sources.mc.StubMCSource` | `sources.mc.MCSource` (needs 2Captcha key) |
-| LinkedIn | `sources.linkedin.StubLinkedInSource` | `sources.linkedin.LinkedInSource` (needs scraping proxy) |
-| Crunchbase | `sources.crunchbase.StubCrunchbaseSource` | `sources.crunchbase.CrunchbaseSource` (needs API key) |
-| Google News | `sources.google_news.StubGoogleNewsSource` | `sources.google_news.SerpAPISource` (needs SerpAPI key) |
+| MC CR Lookup | `sources.mc.StubMCSource` | `sources.mc.MCSource` (needs `TWOCAPTCHA_API_KEY`) |
+| Apollo.io | `sources.apollo.StubApolloSource` | `sources.apollo.ApolloSource` (needs `APOLLO_API_KEY`) |
+| Crunchbase | `sources.crunchbase.StubCrunchbaseSource` | `sources.crunchbase.CrunchbaseSource` (needs `CRUNCHBASE_API_KEY`) |
+| News / signals | `sources.anthropic_news.StubAnthropicNewsSource` | `sources.anthropic_news.AnthropicNewsSource` (needs `ANTHROPIC_API_KEY`) |
 | Job boards | `sources.jobs.StubJobsSource` | `sources.jobs.JobsSource` |
 | Website | `sources.website.StubWebsiteSource` | `sources.website.WebsiteSource` |
-| HubSpot | `crm.hubspot.StubHubSpotWriter` | `crm.hubspot.HubSpotWriter` (needs API key) |
+| HubSpot | `crm.hubspot.StubHubSpotWriter` | `crm.hubspot.HubSpotWriter` (needs `HUBSPOT_API_TOKEN`) |
+
+The news source uses Claude (`claude-opus-4-7`) with the server-side
+`web_search` tool and prompt caching on the research rubric — one structured
+call per lead replaces the three SerpAPI searches + client-side parsing we
+had before. Apollo covers Apollo's native org/people endpoints; growth %
+(#13) is left unscored in live mode because Apollo's free tier doesn't expose
+historical headcount snapshots.
 
 ## Tests
 

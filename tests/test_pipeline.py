@@ -26,8 +26,9 @@ def test_full_pipeline_critical_lead(monkeypatch):
     assert result.classification in (
         Classification.WARM, Classification.HOT, Classification.CRITICAL
     )
-    assert "linkedin" in result.web.sources_seen
+    assert "apollo" in result.web.sources_seen
     assert "crunchbase" in result.web.sources_seen
+    assert "anthropic_news" in result.web.sources_seen
     assert len(result.breakdown) == 16  # 17 data points minus the MC ones not scored here
 
 

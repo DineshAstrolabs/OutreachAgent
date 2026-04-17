@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "click>=8.1",
     "pydantic>=2.6",
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]
@@ -26,10 +27,17 @@ dev = [
 outreach-agent = "outreach_agent.cli:main"
 
 [tool.setuptools]
+# Explicit package list (no `find` directive) — keeps editable installs
+# deterministic across setuptools/pip versions. `find` has historically
+# written bad .pth files on some combos with src-layout, leading to
+# "ModuleNotFoundError: No module named 'outreach_agent'" after install.
 package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
+packages = [
+    "outreach_agent",
+    "outreach_agent.crm",
+    "outreach_agent.sources",
+]
+include-package-data = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

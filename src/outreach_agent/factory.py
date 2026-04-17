@@ -8,10 +8,10 @@ from .captcha import TwoCaptchaClient
 from .config import Config
 from .crm.hubspot import HubSpotWriter, StubHubSpotWriter
 from .pipeline import LinkedInChampionAdapter, Pipeline
+from .sources.anthropic_news import AnthropicNewsSource, StubAnthropicNewsSource
+from .sources.apollo import ApolloSource, StubApolloSource
 from .sources.crunchbase import CrunchbaseSource, StubCrunchbaseSource
-from .sources.google_news import SerpAPISource, StubGoogleNewsSource
 from .sources.jobs import StubJobsSource
-from .sources.linkedin import LinkedInSource, StubLinkedInSource
 from .sources.mc import MCSource, StubMCSource
 from .sources.website import StubWebsiteSource
 
@@ -25,17 +25,17 @@ def build_pipeline(config: Config) -> Pipeline:
 
 
 def _build_stub() -> Pipeline:
-    linkedin = StubLinkedInSource()
+    apollo = StubApolloSource()
     return Pipeline(
         mc=StubMCSource(),
         web_sources=[
-            linkedin,
+            apollo,
             StubCrunchbaseSource(),
-            StubGoogleNewsSource(),
+            StubAnthropicNewsSource(),
             StubJobsSource(),
             StubWebsiteSource(),
         ],
-        champion_source=LinkedInChampionAdapter(linkedin),
+        champion_source=LinkedInChampionAdapter(apollo),
         crm=StubHubSpotWriter(),
     )
 
@@ -43,30 +43,26 @@ def _build_stub() -> Pipeline:
 def _build_live(config: Config) -> Pipeline:
     if not config.twocaptcha_api_key:
         raise RuntimeError("live mode requires TWOCAPTCHA_API_KEY")
-    if not config.linkedin_proxy_url:
-        raise RuntimeError("live mode requires LINKEDIN_PROXY_URL")
+    if not config.apollo_api_key:
+        raise RuntimeError("live mode requires APOLLO_API_KEY")
     if not config.crunchbase_api_key:
         raise RuntimeError("live mode requires CRUNCHBASE_API_KEY")
-    if not config.serpapi_key:
-        raise RuntimeError("live mode requires SERPAPI_KEY")
+    if not config.anthropic_api_key:
+        raise RuntimeError("live mode requires ANTHROPIC_API_KEY")
     if not config.hubspot_api_token:
         raise RuntimeError("live mode requires HUBSPOT_API_TOKEN")
 
     captcha = TwoCaptchaClient(config.twocaptcha_api_key)
-    linkedin = LinkedInSource(
-        config.linkedin_proxy_url,
-        config.linkedin_proxy_user,
-        config.linkedin_proxy_pass,
-    )
+    apollo = ApolloSource(config.apollo_api_key)
     return Pipeline(
         mc=MCSource(captcha),
         web_sources=[
-            linkedin,
+            apollo,
             CrunchbaseSource(config.crunchbase_api_key),
-            SerpAPISource(config.serpapi_key),
+            AnthropicNewsSource(config.anthropic_api_key),
             StubJobsSource(),  # TODO: implement live Bayt/Indeed adapter
             StubWebsiteSource(),  # TODO: implement live website scraper
         ],
-        champion_source=LinkedInChampionAdapter(linkedin),
+        champion_source=LinkedInChampionAdapter(apollo),
         crm=HubSpotWriter(config.hubspot_api_token),
     )
