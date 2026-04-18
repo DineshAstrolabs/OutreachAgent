@@ -146,16 +146,48 @@ class ApolloSource:
     # ---- HTTP helpers -----------------------------------------------------
 
     def _enrich_organization(self, company_name: str) -> dict | None:
-        """Apollo's organization enrich endpoint takes a name + (optional) domain.
-        We pass just the name and let Apollo match."""
-        log.info("[apollo] POST /api/v1/organizations/enrich name=%r", company_name)
-        resp = self.http.post(
-            f"{self.base_url}/api/v1/organizations/enrich",
-            json={"name": company_name},
+        """Look up an organization by name.
+
+        Apollo's public `/organizations/enrich` endpoint is a GET that needs a
+        `domain` — we usually don't have one coming out of MC. The name-lookup
+        path is `/mixed_companies/search` with `q_organization_name`. If we
+        later discover a domain (via website_url from MC) we can call enrich
+        directly — wire that in when the URL is available.
+        """
+        query = _normalize_name(company_name)
+        log.info(
+            "[apollo] POST /api/v1/mixed_companies/search q_organization_name=%r",
+            query,
         )
+        resp = self.http.post(
+            f"{self.base_url}/api/v1/mixed_companies/search",
+            json={
+                "q_organization_name": query,
+                "page": 1,
+                "per_page": 1,
+            },
+        )
+        if resp.status_code == 422:
+            # Apollo returns 422 when the query is empty, too long, or the
+            # account isn't entitled to the search endpoint. Log the body so
+            # we can see which, and fall back to "no match".
+            log.warning(
+                "[apollo] mixed_companies/search 422: %s",
+                _safe_body(resp),
+            )
+            return None
         resp.raise_for_status()
-        log.info("[apollo] organizations/enrich → %d", resp.status_code)
-        return (resp.json() or {}).get("organization")
+        body = resp.json() or {}
+        log.info(
+            "[apollo] mixed_companies/search → %d (accounts=%d orgs=%d)",
+            resp.status_code,
+            len(body.get("accounts") or []),
+            len(body.get("organizations") or []),
+        )
+        # Apollo may return matches under either `organizations` (public
+        # dataset) or `accounts` (if the caller has it as a private account).
+        orgs = body.get("organizations") or body.get("accounts") or []
+        return orgs[0] if orgs else None
 
     def _search_ksa_open_roles(self, org_id: str | None) -> list[dict]:
         if not org_id:
@@ -173,6 +205,9 @@ class ApolloSource:
                 "per_page": 25,
             },
         )
+        if resp.status_code == 422:
+            log.warning("[apollo] mixed_people/search 422: %s", _safe_body(resp))
+            return []
         resp.raise_for_status()
         return (resp.json() or {}).get("people", [])
 
@@ -189,6 +224,12 @@ class ApolloSource:
                 "per_page": 5,
             },
         )
+        if resp.status_code == 422:
+            log.warning(
+                "[apollo] mixed_people/search (champions) 422: %s",
+                _safe_body(resp),
+            )
+            return None
         resp.raise_for_status()
         people = (resp.json() or {}).get("people", [])
         return people[0] if people else None
@@ -251,6 +292,31 @@ class StubApolloSource:
 
 def _slug(name: str) -> str:
     return "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
+
+
+# Apollo 422s on multi-space / overly long / Arabic-punctuation queries. MC
+# company names routinely have double spaces ("OFFTEC Arabia  Company For ...")
+# and trailing Arabic duplicates — strip those before hitting the API.
+_APOLLO_MAX_QUERY = 128
+
+
+def _normalize_name(name: str) -> str:
+    # Collapse whitespace, drop anything past a reasonable cap so Apollo's
+    # validator is happy. We keep the first N chars — MC names lead with the
+    # distinctive entity name before appending the legal suffix.
+    collapsed = " ".join(name.split())
+    if len(collapsed) > _APOLLO_MAX_QUERY:
+        collapsed = collapsed[:_APOLLO_MAX_QUERY].rstrip()
+    return collapsed
+
+
+def _safe_body(resp: httpx.Response) -> str:
+    # Truncated body for logs — Apollo's 422 payload names the bad field.
+    try:
+        text = resp.text
+    except Exception:
+        return "<unreadable>"
+    return text[:400].replace("\n", " ")
 
 
 def _pick_ksa_location(locations: list[dict]) -> dict | None:
