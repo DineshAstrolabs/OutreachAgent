@@ -19,7 +19,7 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..models import BusinessModel, Champion, Champions, CompanyType, WebIntelligence
 
@@ -69,15 +69,33 @@ Be conservative. Unclear or absent evidence → FALSE / null / "Unknown".
 
 
 class CompanyIntel(BaseModel):
-    has_ksa_office_listed: bool = Field(default=False)
-    ksa_saudization_quota_roles: bool = Field(default=False)
-    ksa_generic_roles: bool = Field(default=False)
-    ksa_headcount: int | None = None
-    ksa_headcount_growth_6mo_pct: float | None = None
-    global_headcount: int | None = None
+    """Flat schema — uses 0 / "" sentinels so we can ship it as JSON without
+    hitting Anthropic's strict-mode schema complexity cap."""
+
+    has_ksa_office_listed: bool = False
+    ksa_saudization_quota_roles: bool = False
+    ksa_generic_roles: bool = False
+    ksa_headcount: int = 0
+    ksa_headcount_growth_6mo_pct: float = 0.0
+    global_headcount: int = 0
     ksa_open_vacancies: int = 0
     company_type: str = "Unknown"
     business_model: str = "Unknown"
+
+
+COMPANY_JSON_INSTRUCTIONS = """\
+Respond with ONE JSON object and nothing else — no markdown fence, no prose.
+Use exactly these keys (required, use false / 0 / "Unknown" when unknown):
+  has_ksa_office_listed         boolean
+  ksa_saudization_quota_roles   boolean
+  ksa_generic_roles             boolean
+  ksa_headcount                 integer    (0 if unknown)
+  ksa_headcount_growth_6mo_pct  number     (0 if unknown)
+  global_headcount              integer    (0 if unknown)
+  ksa_open_vacancies            integer    (0 if unknown)
+  company_type                  string     "Startup"|"Scale-up"|"Enterprise"|"Unknown"
+  business_model                string     "Product-Led"|"Sales-Led"|"Hybrid"|"Unknown"
+"""
 
 
 class AnthropicCompanySource:
@@ -111,19 +129,34 @@ class AnthropicCompanySource:
             intel.ksa_open_vacancies, intel.company_type, intel.business_model,
         )
 
-        web.has_ksa_office_listed = intel.has_ksa_office_listed
-        web.ksa_saudization_quota_roles = intel.ksa_saudization_quota_roles
-        web.ksa_generic_roles = intel.ksa_generic_roles
-        web.ksa_headcount = intel.ksa_headcount
-        web.ksa_headcount_growth_6mo_pct = intel.ksa_headcount_growth_6mo_pct
-        web.global_headcount = intel.global_headcount
-        web.ksa_open_vacancies = intel.ksa_open_vacancies
-        web.company_type = _safe_enum(CompanyType, intel.company_type, CompanyType.UNKNOWN)
-        web.business_model = _safe_enum(BusinessModel, intel.business_model, BusinessModel.UNKNOWN)
+        # Merge semantics: only overwrite when Apollo left the field blank.
+        # Anthropic runs AFTER Apollo in the factory, so if Apollo already
+        # populated headcount/vacancies we keep those.
+        if not web.has_ksa_office_listed:
+            web.has_ksa_office_listed = intel.has_ksa_office_listed
+        if not web.ksa_saudization_quota_roles:
+            web.ksa_saudization_quota_roles = intel.ksa_saudization_quota_roles
+        if not web.ksa_generic_roles:
+            web.ksa_generic_roles = intel.ksa_generic_roles
+        if web.ksa_headcount is None and intel.ksa_headcount:
+            web.ksa_headcount = intel.ksa_headcount
+        if web.ksa_headcount_growth_6mo_pct is None and intel.ksa_headcount_growth_6mo_pct:
+            web.ksa_headcount_growth_6mo_pct = intel.ksa_headcount_growth_6mo_pct
+        if web.global_headcount is None and intel.global_headcount:
+            web.global_headcount = intel.global_headcount
+        if not web.ksa_open_vacancies and intel.ksa_open_vacancies:
+            web.ksa_open_vacancies = intel.ksa_open_vacancies
+        if web.company_type == CompanyType.UNKNOWN:
+            web.company_type = _safe_enum(CompanyType, intel.company_type, CompanyType.UNKNOWN)
+        if web.business_model == BusinessModel.UNKNOWN:
+            web.business_model = _safe_enum(BusinessModel, intel.business_model, BusinessModel.UNKNOWN)
         web.sources_seen.append(self.name)
 
     def _research(self, company_name: str) -> CompanyIntel:
-        response = self.client.messages.parse(
+        # messages.parse enforces a strict JSON schema that Anthropic rejects
+        # as "Schema is too complex" for models with >~8 fields and unions.
+        # Use messages.create with a JSON-only instruction instead.
+        response = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
             thinking={"type": "adaptive"},
@@ -131,7 +164,7 @@ class AnthropicCompanySource:
             system=[
                 {
                     "type": "text",
-                    "text": COMPANY_SYSTEM_PROMPT,
+                    "text": COMPANY_SYSTEM_PROMPT + "\n\n" + COMPANY_JSON_INSTRUCTIONS,
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
@@ -141,13 +174,16 @@ class AnthropicCompanySource:
                     "content": (
                         f"Research the company '{company_name}' using publicly "
                         f"available sources (LinkedIn company page, careers site, "
-                        f"Bayt, Indeed, Crunchbase) and return the signal bundle."
+                        f"Bayt, Indeed, Crunchbase) and return the signal bundle "
+                        f"as a single JSON object."
                     ),
                 }
             ],
-            output_format=CompanyIntel,
         )
-        return response.parsed_output
+        text = "".join(
+            b.text for b in response.content if getattr(b, "type", None) == "text"
+        ).strip()
+        return CompanyIntel.model_validate_json(_extract_json_object(text))
 
 
 class StubAnthropicCompanySource:
@@ -209,18 +245,35 @@ Rules:
 """
 
 
-class ChampionPerson(BaseModel):
-    name: str
-    title: str
-    linkedin_url: str
-    start_date_iso: str | None = None
-
-
 class ChampionBundle(BaseModel):
-    admin: ChampionPerson | None = None
+    """Flat champion schema — no nested models, empty strings as sentinels."""
+
+    admin_name: str = ""
+    admin_title: str = ""
+    admin_linkedin_url: str = ""
+    admin_start_date_iso: str = ""
     admin_is_overwhelmed: bool = False
-    gm: ChampionPerson | None = None
+    gm_name: str = ""
+    gm_title: str = ""
+    gm_linkedin_url: str = ""
+    gm_start_date_iso: str = ""
     gm_is_new: bool = False
+
+
+CHAMPION_JSON_INSTRUCTIONS = """\
+Respond with ONE JSON object and nothing else — no markdown fence, no prose.
+Use exactly these keys (required, use "" / false when unknown):
+  admin_name             string
+  admin_title            string
+  admin_linkedin_url     string
+  admin_start_date_iso   string   (YYYY-MM-DD or "")
+  admin_is_overwhelmed   boolean
+  gm_name                string
+  gm_title               string
+  gm_linkedin_url        string
+  gm_start_date_iso      string   (YYYY-MM-DD or "")
+  gm_is_new              boolean
+"""
 
 
 class AnthropicChampionSource:
@@ -248,20 +301,21 @@ class AnthropicChampionSource:
         log.info(
             "[anthropic_champions] ok in %.2fs: admin=%s gm=%s admin_overwhelmed=%s gm_new=%s",
             _t.monotonic() - t0,
-            bundle.admin.name if bundle.admin else None,
-            bundle.gm.name if bundle.gm else None,
+            bundle.admin_name or None, bundle.gm_name or None,
             bundle.admin_is_overwhelmed, bundle.gm_is_new,
         )
 
         return Champions(
-            admin=_to_champion(bundle.admin),
+            admin=_flat_to_champion(bundle.admin_name, bundle.admin_title,
+                                    bundle.admin_linkedin_url, bundle.admin_start_date_iso),
             admin_is_overwhelmed=bundle.admin_is_overwhelmed,
-            gm=_to_champion(bundle.gm),
+            gm=_flat_to_champion(bundle.gm_name, bundle.gm_title,
+                                 bundle.gm_linkedin_url, bundle.gm_start_date_iso),
             gm_is_new=bundle.gm_is_new,
         )
 
     def _research(self, company_name: str) -> ChampionBundle:
-        response = self.client.messages.parse(
+        response = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
             thinking={"type": "adaptive"},
@@ -269,7 +323,7 @@ class AnthropicChampionSource:
             system=[
                 {
                     "type": "text",
-                    "text": CHAMPION_SYSTEM_PROMPT,
+                    "text": CHAMPION_SYSTEM_PROMPT + "\n\n" + CHAMPION_JSON_INSTRUCTIONS,
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
@@ -279,13 +333,15 @@ class AnthropicChampionSource:
                     "content": (
                         f"Find the admin + GM champions at '{company_name}' in "
                         f"Saudi Arabia using publicly available LinkedIn profile "
-                        f"data."
+                        f"data. Return one JSON object."
                     ),
                 }
             ],
-            output_format=ChampionBundle,
         )
-        return response.parsed_output
+        text = "".join(
+            b.text for b in response.content if getattr(b, "type", None) == "text"
+        ).strip()
+        return ChampionBundle.model_validate_json(_extract_json_object(text))
 
 
 class StubAnthropicChampionSource:
@@ -330,21 +386,53 @@ def _safe_enum(enum_cls, raw: str, default):
         return default
 
 
-def _to_champion(p: ChampionPerson | None) -> Champion | None:
-    if p is None:
+def _flat_to_champion(
+    name: str, title: str, linkedin_url: str, start_date_iso: str
+) -> Champion | None:
+    if not name:
         return None
     start = None
-    if p.start_date_iso:
+    if start_date_iso:
         try:
-            start = date.fromisoformat(p.start_date_iso)
+            start = date.fromisoformat(start_date_iso)
         except ValueError:
             start = None
     return Champion(
-        name=p.name,
-        title=p.title,
-        linkedin_url=p.linkedin_url,
+        name=name,
+        title=title,
+        linkedin_url=linkedin_url,
         start_date=start,
     )
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the first balanced {...} block. Claude with web_search sometimes
+    wraps the JSON in a short preamble — be tolerant."""
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"no JSON object in Claude response: {text[:200]!r}")
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError(f"unterminated JSON object in Claude response: {text[:200]!r}")
 
 
 def _fixture_champion(d: dict | None) -> Champion | None:

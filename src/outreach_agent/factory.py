@@ -98,7 +98,20 @@ def _build_live(config: Config) -> Pipeline:
     if config.apollo_enabled:
         apollo = ApolloSource(config.apollo_api_key)
         web_sources.append(apollo)
-        champion_source = LinkedInChampionAdapter(apollo)
+        # Chain Anthropic AFTER Apollo so it backfills any fields Apollo left
+        # blank (Apollo often returns nothing for MC-only Saudi entities that
+        # aren't in Apollo's B2B graph). AnthropicCompanySource.enrich()
+        # merges non-destructively — it won't overwrite populated fields.
+        log.info(
+            "apollo enabled → also running Anthropic company/champion backfill"
+        )
+        web_sources.append(AnthropicCompanySource(config.anthropic_api_key))
+        # Prefer Apollo champions; fall back to Anthropic when Apollo returns
+        # nothing. Wrap both in a chained source below.
+        champion_source = _ChainedChampionSource(
+            primary=LinkedInChampionAdapter(apollo),
+            fallback=AnthropicChampionSource(config.anthropic_api_key),
+        )
     else:
         log.info(
             "apollo disabled → Anthropic (Claude + web_search) will cover "
@@ -132,3 +145,27 @@ def _build_live(config: Config) -> Pipeline:
         champion_source=champion_source,
         crm=crm,
     )
+
+
+class _ChainedChampionSource:
+    """Call primary first; if it returns no admin AND no GM, fall back.
+
+    Apollo's people-search is stingy for MC-only Saudi entities. Rather than
+    accept empty champions on data point #23/#24, ask Claude via web_search
+    to take another pass. The two sources are both ChampionSourceP so no
+    adapter needed.
+    """
+
+    def __init__(self, primary, fallback):
+        self.primary = primary
+        self.fallback = fallback
+
+    def find(self, company_name: str):
+        result = self.primary.find(company_name)
+        if result.admin is not None or result.gm is not None:
+            return result
+        log.info(
+            "[champions] primary (%s) returned empty; trying fallback (%s)",
+            type(self.primary).__name__, type(self.fallback).__name__,
+        )
+        return self.fallback.find(company_name)
