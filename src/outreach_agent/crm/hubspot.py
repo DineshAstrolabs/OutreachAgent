@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 # Create these before first run via HubSpot's "Create a property" endpoint.
 PROPERTY_SCHEMA: dict[str, tuple[str, str, str]] = {
     "unified_number":             ("Unified Number", "string", "Saudi CR Unified Number"),
+    "company_legal_name_ar":      ("Company Legal Name (Arabic)", "string", "Arabic legal name from MC or CSV"),
     "cr_number":                  ("CR Number", "string", "Commercial Registration number"),
     "cr_status":                  ("CR Status", "enumeration", "Active/Expired/Cancelled/..."),
     "cr_entity_type":             ("CR Entity Type", "enumeration", "LLC foreign / Branch / ..."),
@@ -37,6 +38,7 @@ PROPERTY_SCHEMA: dict[str, tuple[str, str, str]] = {
     "registered_capital_sar":     ("Registered Capital (SAR)", "number", ""),
     "subsidiary_cr_count":        ("Subsidiary CRs", "number", ""),
     "phone":                      ("Phone", "string", ""),
+    "mobile":                     ("Mobile", "string", "Mobile number (distinct from phone)"),
     "website_url":                ("Website URL", "string", "MC 'Url Address'"),
     "ksa_city":                   ("KSA City", "string", ""),
     "ksa_region":                 ("KSA Region", "string", ""),
@@ -100,6 +102,7 @@ def to_hubspot_properties(r: QualificationResult) -> dict[str, object]:
     if mc is not None:
         props.update({
             "name": mc.company_legal_name,
+            "company_legal_name_ar": mc.company_legal_name_ar,
             "cr_number": mc.cr_number,
             "cr_status": mc.cr_status.value,
             "cr_entity_type": mc.entity_type.value,
@@ -112,6 +115,7 @@ def to_hubspot_properties(r: QualificationResult) -> dict[str, object]:
             "registered_capital_sar": mc.registered_capital_sar,
             "subsidiary_cr_count": mc.subsidiary_cr_count,
             "phone": mc.phone,
+            "mobile": mc.mobile,
             "website_url": mc.website_url,
             "ksa_city": mc.city,
             "ksa_region": mc.region,

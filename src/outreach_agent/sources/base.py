@@ -14,17 +14,21 @@ class MCSourceP(Protocol):
 class WebIntelligenceSourceP(Protocol):
     """A source that contributes to WebIntelligence. Mutates the passed object.
 
+    Sources receive the full MCData so each one can pick whichever fields
+    it needs — English legal name, Arabic legal name (useful for Claude
+    web_search), phone/mobile for dedupe, website URL, etc.
+
     Sources are designed to be composable and fault-tolerant: any failure
     should be recorded in `sources_failed` and the pipeline continues.
     """
 
     name: str
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None: ...
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None: ...
 
 
 class ChampionSourceP(Protocol):
-    def find(self, company_name: str) -> Champions: ...
+    def find(self, mc: MCData) -> Champions: ...
 
 
 class CRMWriterP(Protocol):

@@ -17,9 +17,9 @@ import json
 import logging
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from ..models import WebIntelligence
+from ..models import MCData, WebIntelligence
 
 log = logging.getLogger(__name__)
 
@@ -32,16 +32,17 @@ You are a B2B research analyst for AstroLabs, a KSA business-setup firm.
 For each company you will receive, use the web_search tool to look up news
 from the last 6 months and return a strict JSON signal bundle.
 
-Search strategy (run each as a separate web_search):
+Search strategy (run each as a separate web_search — try both the English
+and Arabic legal names when provided, since Saudi press often uses Arabic):
   1. "<company>" "Saudi Arabia" OR "KSA" OR "Riyadh"  -> KSA-specific news
   2. "<company>" funding OR raised OR "Series"        -> funding round news
   3. "<company>" "new general manager" OR "GM" OR "Country Manager" KSA
 
 Scoring rules (map every signal to a boolean, default False if unclear):
-  - ksa_news_last_6mo: TRUE only if ≥1 article from the last 6 months mentions
+  - ksa_news_last_6mo: TRUE only if >=1 article from the last 6 months mentions
     the company AND contains a KSA geography term (Saudi, KSA, Riyadh, Jeddah,
     Dammam, NEOM, Vision 2030).
-  - general_news_last_6mo: TRUE only if there is recent (≤6mo) company news but
+  - general_news_last_6mo: TRUE only if there is recent (<=6mo) company news but
     none of it is KSA-specific. Set FALSE when ksa_news_last_6mo is TRUE.
   - funding_last_12mo: TRUE if any article in the last 12 months announces a
     funding round, investment, seed, Series A/B/C, or valuation event.
@@ -61,21 +62,36 @@ Scoring rules (map every signal to a boolean, default False if unclear):
     announced in the last 6 months (use instead of new_gm_within_6mo if there
     is no GM-level hire).
 
-Be conservative. Unclear or absent evidence → FALSE. Do not fabricate hits.
+Be conservative. Unclear or absent evidence -> FALSE. Do not fabricate hits.
+"""
+
+
+JSON_INSTRUCTIONS = """\
+Respond with ONE JSON object and nothing else — no markdown fence, no prose.
+Use exactly these keys (required, use false when unknown):
+  ksa_news_last_6mo               boolean
+  general_news_last_6mo           boolean
+  funding_last_12mo               boolean
+  funding_mentions_ksa            boolean
+  partnership_with_saudi_entity   boolean
+  social_mention_by_saudi_partner boolean
+  new_gm_within_6mo               boolean
+  senior_hire_within_6mo          boolean
 """
 
 
 class CompanySignals(BaseModel):
-    """What the model returns. Maps 1-1 onto WebIntelligence fields."""
+    """Flat schema — keeps the JSON shape small enough that any downstream
+    validation (including strict-mode) accepts it."""
 
-    ksa_news_last_6mo: bool = Field(description="KSA-geo news in last 6 months")
-    general_news_last_6mo: bool = Field(description="Non-KSA company news in last 6mo")
-    funding_last_12mo: bool = Field(description="Funding round in last 12 months")
-    funding_mentions_ksa: bool = Field(description="Funding article also mentions KSA")
-    partnership_with_saudi_entity: bool = Field(description="Named Saudi partner")
-    social_mention_by_saudi_partner: bool = Field(description="Saudi partner tagged/mentioned publicly")
-    new_gm_within_6mo: bool = Field(description="New KSA GM/Country Manager in 6mo")
-    senior_hire_within_6mo: bool = Field(description="Senior KSA hire (VP/Dir/C-level) in 6mo")
+    ksa_news_last_6mo: bool = False
+    general_news_last_6mo: bool = False
+    funding_last_12mo: bool = False
+    funding_mentions_ksa: bool = False
+    partnership_with_saudi_entity: bool = False
+    social_mention_by_saudi_partner: bool = False
+    new_gm_within_6mo: bool = False
+    senior_hire_within_6mo: bool = False
 
 
 class AnthropicNewsSource:
@@ -92,14 +108,17 @@ class AnthropicNewsSource:
         self.client = Anthropic(api_key=api_key)
         self.model = model
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None:
-        log.info("[anthropic_news] researching %r via Claude + web_search", company_name)
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None:
+        log.info(
+            "[anthropic_news] researching %r (ar=%r) via Claude + web_search",
+            mc.company_legal_name, mc.company_legal_name_ar,
+        )
         import time as _t
         t0 = _t.monotonic()
         try:
-            signals = self._research(company_name)
+            signals = self._research(mc)
         except Exception as exc:
-            log.warning("[anthropic_news] failed for %s: %s", company_name, exc)
+            log.warning("[anthropic_news] failed for %s: %s", mc.company_legal_name, exc)
             web.sources_failed.append(self.name)
             return
         log.info(
@@ -123,9 +142,12 @@ class AnthropicNewsSource:
         web.senior_hire_within_6mo = signals.senior_hire_within_6mo
         web.sources_seen.append(self.name)
 
-    def _research(self, company_name: str) -> CompanySignals:
+    def _research(self, mc: MCData) -> CompanySignals:
         log.info("[anthropic_news] POST /v1/messages model=%s tools=web_search", self.model)
-        response = self.client.messages.parse(
+        # messages.parse with a rich schema trips Anthropic's strict-mode
+        # "Schema is too complex" guard. Use messages.create + JSON-only
+        # instructions and validate the text ourselves.
+        response = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
             thinking={"type": "adaptive"},
@@ -133,23 +155,21 @@ class AnthropicNewsSource:
             system=[
                 {
                     "type": "text",
-                    "text": SYSTEM_PROMPT,
+                    "text": SYSTEM_PROMPT + "\n\n" + JSON_INSTRUCTIONS,
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
             messages=[
                 {
                     "role": "user",
-                    "content": (
-                        f"Research the company '{company_name}' and return the signal "
-                        f"bundle. Focus on KSA (Saudi Arabia) activity in the last 6 "
-                        f"months; funding in the last 12 months."
-                    ),
+                    "content": _build_news_prompt(mc),
                 }
             ],
-            output_format=CompanySignals,
         )
-        return response.parsed_output
+        text = "".join(
+            b.text for b in response.content if getattr(b, "type", None) == "text"
+        ).strip()
+        return CompanySignals.model_validate_json(_extract_json_object(text))
 
 
 class StubAnthropicNewsSource:
@@ -164,8 +184,8 @@ class StubAnthropicNewsSource:
             or Path(__file__).parent.parent.parent.parent / "fixtures" / "news"
         )
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None:
-        path = self.fixtures_dir / f"{_slug(company_name)}.json"
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None:
+        path = self.fixtures_dir / f"{_slug(mc.company_legal_name)}.json"
         if not path.exists():
             return
         data = json.loads(path.read_text())
@@ -179,6 +199,69 @@ class StubAnthropicNewsSource:
         web.new_gm_within_6mo = data.get("new_gm_within_6mo", False)
         web.senior_hire_within_6mo = data.get("senior_hire_within_6mo", False)
         web.sources_seen.append(self.name)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_news_prompt(mc: MCData) -> str:
+    """Compose the user-message for the news search. Feeds Claude every
+    identifier we have so it can pick the right disambiguator — Arabic name
+    is especially valuable for KSA press coverage."""
+    lines: list[str] = []
+    lines.append(f"Company (English): {mc.company_legal_name}")
+    if mc.company_legal_name_ar:
+        lines.append(f"Company (Arabic):  {mc.company_legal_name_ar}")
+    if mc.cr_number:
+        lines.append(f"CR Number: {mc.cr_number}")
+    if mc.website_url:
+        lines.append(f"Website: {mc.website_url}")
+    if mc.phone:
+        lines.append(f"Phone: {mc.phone}")
+    if mc.mobile:
+        lines.append(f"Mobile: {mc.mobile}")
+    if mc.city or mc.region:
+        lines.append(f"Location: {', '.join(x for x in (mc.city, mc.region) if x)}")
+    header = "\n".join(lines)
+    ask = (
+        "Research this company and return the news/signal bundle. Focus on "
+        "KSA (Saudi Arabia) activity in the last 6 months; funding in the "
+        "last 12 months. Search the Arabic name too when provided — Saudi "
+        "press often uses it. Return one JSON object."
+    )
+    return f"{header}\n\n{ask}"
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the first balanced {...} block. Claude with web_search sometimes
+    wraps the JSON in a short preamble — be tolerant."""
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"no JSON object in Claude response: {text[:200]!r}")
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError(f"unterminated JSON object in Claude response: {text[:200]!r}")
 
 
 def _slug(name: str) -> str:

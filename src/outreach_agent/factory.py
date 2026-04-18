@@ -160,12 +160,12 @@ class _ChainedChampionSource:
         self.primary = primary
         self.fallback = fallback
 
-    def find(self, company_name: str):
-        result = self.primary.find(company_name)
+    def find(self, mc):
+        result = self.primary.find(mc)
         if result.admin is not None or result.gm is not None:
             return result
         log.info(
             "[champions] primary (%s) returned empty; trying fallback (%s)",
             type(self.primary).__name__, type(self.fallback).__name__,
         )
-        return self.fallback.find(company_name)
+        return self.fallback.find(mc)

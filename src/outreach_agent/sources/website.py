@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 
-from ..models import BusinessModel, WebIntelligence
+from ..models import BusinessModel, MCData, WebIntelligence
 
 log = logging.getLogger(__name__)
 
@@ -20,8 +20,8 @@ class StubWebsiteSource:
     def __init__(self, fixtures_dir: Path | None = None):
         self.fixtures_dir = fixtures_dir or Path(__file__).parent.parent.parent.parent / "fixtures" / "website"
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None:
-        path = self.fixtures_dir / f"{_slug(company_name)}.json"
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None:
+        path = self.fixtures_dir / f"{_slug(mc.company_legal_name)}.json"
         if not path.exists():
             return
         data = json.loads(path.read_text())

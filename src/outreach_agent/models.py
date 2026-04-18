@@ -71,6 +71,7 @@ class MCData:
     company_legal_name: str
     cr_status: CRStatus
     entity_type: EntityType
+    company_legal_name_ar: str | None = None  # Arabic legal name — from MC or CSV hint
     cr_number: str | None = None
     cr_issue_date: date | None = None
     cr_expiry_date: date | None = None
@@ -80,6 +81,7 @@ class MCData:
     activities: str | None = None              # free-text activities list
     registered_capital_sar: int | None = None
     phone: str | None = None
+    mobile: str | None = None                  # "Mobile" from CSV hint (distinct from landline phone)
     website_url: str | None = None             # "Url Address"
     subsidiary_cr_count: int = 0
     city: str | None = None

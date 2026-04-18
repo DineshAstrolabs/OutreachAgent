@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 _ALIASES: dict[str, tuple[str, ...]] = {
     "unified_number":         ("unified_number", "unified number", "unifiednumber"),
     "company_legal_name":     ("company name (en)", "company_name_en", "company name", "company_name", "legal name"),
+    "company_legal_name_ar":  ("company name (ar)", "company_name_ar", "arabic name"),
     "cr_status":              ("registration status", "cr status", "status"),
     "entity_type":            ("legal entity", "entity type", "entity_type"),
     "business_type_raw":      ("registration type", "business type", "business_type"),
@@ -32,7 +33,8 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "cr_issue_date":          ("registration date", "issue date", "cr issue date"),
     "cr_expiry_date":         ("expiry date", "cr expiry date", "expiration date"),
     "registered_capital_sar": ("capital", "registered capital", "capital (sar)"),
-    "phone":                  ("phone", "mobile", "telephone"),
+    "phone":                  ("phone", "telephone", "landline"),
+    "mobile":                 ("mobile", "cell", "mobile number"),
     "activities":             ("activities",),
     "city":                   ("location", "city"),
     "region":                 ("region",),
@@ -63,12 +65,14 @@ def row_to_mc_hint(row: dict[str, str]) -> MCData | None:
         company_legal_name=get("company_legal_name"),
         cr_status=_parse_status(status_raw) if status_raw else CRStatus.NOT_FOUND,
         entity_type=_parse_entity_type(entity_raw) if entity_raw else EntityType.UNKNOWN,
+        company_legal_name_ar=get("company_legal_name_ar") or None,
         cr_number=get("cr_number") or None,
         cr_issue_date=_parse_date(get("cr_issue_date")),
         cr_expiry_date=_parse_date(get("cr_expiry_date")),
         business_type_raw=get("business_type_raw") or None,
         registered_capital_sar=_first_int(get("registered_capital_sar")),
         phone=get("phone") or None,
+        mobile=get("mobile") or None,
         activities=get("activities") or None,
         city=get("city") or None,
         region=get("region") or None,
@@ -96,6 +100,7 @@ def merge_hint_into_mc(mc: MCData, hint: MCData | None) -> MCData:
             company_legal_name=hint.company_legal_name,
             cr_status=hint.cr_status,
             entity_type=hint.entity_type,
+            company_legal_name_ar=hint.company_legal_name_ar,
             cr_number=hint.cr_number,
             cr_issue_date=hint.cr_issue_date,
             cr_expiry_date=hint.cr_expiry_date,
@@ -105,6 +110,7 @@ def merge_hint_into_mc(mc: MCData, hint: MCData | None) -> MCData:
             activities=hint.activities,
             registered_capital_sar=hint.registered_capital_sar,
             phone=hint.phone,
+            mobile=hint.mobile,
             website_url=hint.website_url,
             subsidiary_cr_count=hint.subsidiary_cr_count,
             city=hint.city,
@@ -120,6 +126,7 @@ def merge_hint_into_mc(mc: MCData, hint: MCData | None) -> MCData:
         company_legal_name=pick(mc.company_legal_name, hint.company_legal_name),
         cr_status=mc.cr_status if mc.cr_status != CRStatus.NOT_FOUND else hint.cr_status,
         entity_type=mc.entity_type if mc.entity_type != EntityType.UNKNOWN else hint.entity_type,
+        company_legal_name_ar=pick(mc.company_legal_name_ar, hint.company_legal_name_ar),
         cr_number=pick(mc.cr_number, hint.cr_number),
         cr_issue_date=pick(mc.cr_issue_date, hint.cr_issue_date),
         cr_expiry_date=pick(mc.cr_expiry_date, hint.cr_expiry_date),
@@ -129,6 +136,7 @@ def merge_hint_into_mc(mc: MCData, hint: MCData | None) -> MCData:
         activities=pick(mc.activities, hint.activities),
         registered_capital_sar=pick(mc.registered_capital_sar, hint.registered_capital_sar),
         phone=pick(mc.phone, hint.phone),
+        mobile=pick(mc.mobile, hint.mobile),
         website_url=pick(mc.website_url, hint.website_url),
         subsidiary_cr_count=mc.subsidiary_cr_count or hint.subsidiary_cr_count,
         city=pick(mc.city, hint.city),
@@ -137,9 +145,10 @@ def merge_hint_into_mc(mc: MCData, hint: MCData | None) -> MCData:
 
     filled = [
         f for f in (
-            "company_legal_name", "cr_number", "cr_issue_date", "cr_expiry_date",
-            "business_type_raw", "activities", "registered_capital_sar",
-            "phone", "city", "region",
+            "company_legal_name", "company_legal_name_ar", "cr_number",
+            "cr_issue_date", "cr_expiry_date", "business_type_raw",
+            "activities", "registered_capital_sar", "phone", "mobile",
+            "city", "region",
         )
         if getattr(mc, f) in (None, "", 0) and getattr(merged, f) not in (None, "", 0)
     ]

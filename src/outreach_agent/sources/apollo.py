@@ -29,7 +29,7 @@ from pathlib import Path
 
 import httpx
 
-from ..models import Champion, Champions, CompanyType, WebIntelligence
+from ..models import Champion, Champions, CompanyType, MCData, WebIntelligence
 
 log = logging.getLogger(__name__)
 
@@ -75,10 +75,16 @@ class ApolloSource:
 
     # ---- WebIntelligenceSourceP -------------------------------------------
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None:
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None:
+        company_name = mc.company_legal_name
         log.info("[apollo] enrich %r", company_name)
         try:
+            # Apollo's B2B graph is English-only, so AR name is useless here.
+            # If EN lookup misses, try the website domain from MC as a signal.
             org = self._enrich_organization(company_name)
+            if not org and mc.website_url:
+                log.info("[apollo] EN name miss — retrying enrich via domain %s", mc.website_url)
+                org = self._enrich_organization_by_domain(mc.website_url)
             if not org:
                 log.info("[apollo] no organization match for %s", company_name)
                 web.sources_failed.append(self.name)
@@ -118,10 +124,13 @@ class ApolloSource:
 
     # ---- Champion lookup --------------------------------------------------
 
-    def find_champions(self, company_name: str) -> Champions:
+    def find_champions(self, mc: MCData) -> Champions:
+        company_name = mc.company_legal_name
         log.info("[apollo] find_champions %r", company_name)
         try:
             org = self._enrich_organization(company_name)
+            if not org and mc.website_url:
+                org = self._enrich_organization_by_domain(mc.website_url)
             if not org:
                 log.info("[apollo] no org match; empty champions")
                 return Champions()
@@ -189,6 +198,23 @@ class ApolloSource:
         orgs = body.get("organizations") or body.get("accounts") or []
         return orgs[0] if orgs else None
 
+    def _enrich_organization_by_domain(self, url: str) -> dict | None:
+        """Apollo's canonical enrich path is GET /organizations/enrich?domain=X.
+        Use this when MC gave us a website URL and the name search missed."""
+        domain = _url_to_domain(url)
+        if not domain:
+            return None
+        log.info("[apollo] GET /api/v1/organizations/enrich domain=%s", domain)
+        resp = self.http.get(
+            f"{self.base_url}/api/v1/organizations/enrich",
+            params={"domain": domain},
+        )
+        if resp.status_code == 422:
+            log.warning("[apollo] organizations/enrich 422: %s", _safe_body(resp))
+            return None
+        resp.raise_for_status()
+        return (resp.json() or {}).get("organization")
+
     def _search_ksa_open_roles(self, org_id: str | None) -> list[dict]:
         if not org_id:
             return []
@@ -250,8 +276,8 @@ class StubApolloSource:
             or Path(__file__).parent.parent.parent.parent / "fixtures" / "linkedin"
         )
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None:
-        data = self._load(company_name)
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None:
+        data = self._load(mc.company_legal_name)
         if not data:
             return
 
@@ -266,8 +292,8 @@ class StubApolloSource:
             web.company_type = CompanyType(data["company_type"])
         web.sources_seen.append(self.name)
 
-    def find_champions(self, company_name: str) -> Champions:
-        data = self._load(company_name) or {}
+    def find_champions(self, mc: MCData) -> Champions:
+        data = self._load(mc.company_legal_name) or {}
         admin = _to_fixture_champion(data.get("admin"))
         gm = _to_fixture_champion(data.get("gm"))
         return Champions(
@@ -308,6 +334,21 @@ def _normalize_name(name: str) -> str:
     if len(collapsed) > _APOLLO_MAX_QUERY:
         collapsed = collapsed[:_APOLLO_MAX_QUERY].rstrip()
     return collapsed
+
+
+def _url_to_domain(url: str) -> str | None:
+    """Extract the bare domain — Apollo enrich wants 'acme.com', not a URL."""
+    if not url:
+        return None
+    u = url.strip()
+    for prefix in ("https://", "http://"):
+        if u.lower().startswith(prefix):
+            u = u[len(prefix):]
+            break
+    u = u.split("/", 1)[0].split("?", 1)[0].strip()
+    if u.lower().startswith("www."):
+        u = u[4:]
+    return u or None
 
 
 def _safe_body(resp: httpx.Response) -> str:

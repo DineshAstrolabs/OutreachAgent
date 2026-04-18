@@ -102,7 +102,7 @@ class Pipeline:
             for source in self.web_sources:
                 with _step(f"  source: {source.name}"):
                     try:
-                        source.enrich(mc_data.company_legal_name, web)
+                        source.enrich(mc_data, web)
                     except Exception as exc:
                         log.warning("  source %s crashed: %s", source.name, exc)
                         web.sources_failed.append(source.name)
@@ -126,7 +126,7 @@ class Pipeline:
         # 4. Champions
         with _step("STEP 4/6 — champion identification"):
             try:
-                champions = self.champion_source.find(mc_data.company_legal_name)
+                champions = self.champion_source.find(mc_data)
             except Exception as exc:
                 log.warning("  champion lookup failed: %s", exc)
                 champions = Champions()
@@ -199,10 +199,10 @@ class LinkedInChampionAdapter:
     the pipeline's champion slot doesn't hard-depend on LinkedIn — a future
     source (Apollo, ZoomInfo) could plug in here instead."""
 
-    inner: object  # something with find_champions(company_name) -> Champions
+    inner: object  # something with find_champions(mc) -> Champions
 
-    def find(self, company_name: str) -> Champions:
-        return self.inner.find_champions(company_name)
+    def find(self, mc: MCData) -> Champions:
+        return self.inner.find_champions(mc)
 
 
 # ---------------------------------------------------------------------------
@@ -213,5 +213,5 @@ class LinkedInChampionAdapter:
 class NullChampionSource:
     """Returns an empty Champions bundle. Used when Apollo is disabled."""
 
-    def find(self, company_name: str) -> Champions:
+    def find(self, mc: MCData) -> Champions:
         return Champions()

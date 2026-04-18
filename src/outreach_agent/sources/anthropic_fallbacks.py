@@ -21,7 +21,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from ..models import BusinessModel, Champion, Champions, CompanyType, WebIntelligence
+from ..models import BusinessModel, Champion, Champions, CompanyType, MCData, WebIntelligence
 
 log = logging.getLogger(__name__)
 
@@ -111,14 +111,17 @@ class AnthropicCompanySource:
         self.client = Anthropic(api_key=api_key)
         self.model = model
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None:
-        log.info("[anthropic_company] researching %r via Claude + web_search", company_name)
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None:
+        log.info(
+            "[anthropic_company] researching %r (ar=%r) via Claude + web_search",
+            mc.company_legal_name, mc.company_legal_name_ar,
+        )
         import time as _t
         t0 = _t.monotonic()
         try:
-            intel = self._research(company_name)
+            intel = self._research(mc)
         except Exception as exc:
-            log.warning("[anthropic_company] failed for %s: %s", company_name, exc)
+            log.warning("[anthropic_company] failed for %s: %s", mc.company_legal_name, exc)
             web.sources_failed.append(self.name)
             return
         log.info(
@@ -152,7 +155,7 @@ class AnthropicCompanySource:
             web.business_model = _safe_enum(BusinessModel, intel.business_model, BusinessModel.UNKNOWN)
         web.sources_seen.append(self.name)
 
-    def _research(self, company_name: str) -> CompanyIntel:
+    def _research(self, mc: MCData) -> CompanyIntel:
         # messages.parse enforces a strict JSON schema that Anthropic rejects
         # as "Schema is too complex" for models with >~8 fields and unions.
         # Use messages.create with a JSON-only instruction instead.
@@ -171,12 +174,7 @@ class AnthropicCompanySource:
             messages=[
                 {
                     "role": "user",
-                    "content": (
-                        f"Research the company '{company_name}' using publicly "
-                        f"available sources (LinkedIn company page, careers site, "
-                        f"Bayt, Indeed, Crunchbase) and return the signal bundle "
-                        f"as a single JSON object."
-                    ),
+                    "content": _build_research_prompt(mc, task="company_signals"),
                 }
             ],
         )
@@ -197,8 +195,8 @@ class StubAnthropicCompanySource:
             or Path(__file__).parent.parent.parent.parent / "fixtures" / "linkedin"
         )
 
-    def enrich(self, company_name: str, web: WebIntelligence) -> None:
-        path = self.fixtures_dir / f"{_slug(company_name)}.json"
+    def enrich(self, mc: MCData, web: WebIntelligence) -> None:
+        path = self.fixtures_dir / f"{_slug(mc.company_legal_name)}.json"
         if not path.exists():
             return
         data = json.loads(path.read_text())
@@ -289,14 +287,17 @@ class AnthropicChampionSource:
         self.client = Anthropic(api_key=api_key)
         self.model = model
 
-    def find(self, company_name: str) -> Champions:
-        log.info("[anthropic_champions] finding champions for %r via Claude + web_search", company_name)
+    def find(self, mc: MCData) -> Champions:
+        log.info(
+            "[anthropic_champions] finding champions for %r (ar=%r) via Claude + web_search",
+            mc.company_legal_name, mc.company_legal_name_ar,
+        )
         import time as _t
         t0 = _t.monotonic()
         try:
-            bundle = self._research(company_name)
+            bundle = self._research(mc)
         except Exception as exc:
-            log.warning("[anthropic_champions] failed for %s: %s", company_name, exc)
+            log.warning("[anthropic_champions] failed for %s: %s", mc.company_legal_name, exc)
             return Champions()
         log.info(
             "[anthropic_champions] ok in %.2fs: admin=%s gm=%s admin_overwhelmed=%s gm_new=%s",
@@ -314,7 +315,7 @@ class AnthropicChampionSource:
             gm_is_new=bundle.gm_is_new,
         )
 
-    def _research(self, company_name: str) -> ChampionBundle:
+    def _research(self, mc: MCData) -> ChampionBundle:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -330,11 +331,7 @@ class AnthropicChampionSource:
             messages=[
                 {
                     "role": "user",
-                    "content": (
-                        f"Find the admin + GM champions at '{company_name}' in "
-                        f"Saudi Arabia using publicly available LinkedIn profile "
-                        f"data. Return one JSON object."
-                    ),
+                    "content": _build_research_prompt(mc, task="champions"),
                 }
             ],
         )
@@ -355,8 +352,8 @@ class StubAnthropicChampionSource:
             or Path(__file__).parent.parent.parent.parent / "fixtures" / "linkedin"
         )
 
-    def find(self, company_name: str) -> Champions:
-        path = self.fixtures_dir / f"{_slug(company_name)}.json"
+    def find(self, mc: MCData) -> Champions:
+        path = self.fixtures_dir / f"{_slug(mc.company_legal_name)}.json"
         if not path.exists():
             return Champions()
         data = json.loads(path.read_text())
@@ -384,6 +381,45 @@ def _safe_enum(enum_cls, raw: str, default):
         return enum_cls(raw)
     except (ValueError, KeyError):
         return default
+
+
+def _build_research_prompt(mc: MCData, task: str) -> str:
+    """Compose a research prompt that lets Claude use every identifier we
+    have — English and Arabic legal names, landline + mobile phone numbers,
+    website, CR number. Claude can dedupe / disambiguate using any of these,
+    and for KSA companies the Arabic name often surfaces results that the
+    English transliteration misses."""
+    lines: list[str] = []
+    lines.append(f"Company (English): {mc.company_legal_name}")
+    if mc.company_legal_name_ar:
+        lines.append(f"Company (Arabic):  {mc.company_legal_name_ar}")
+    if mc.cr_number:
+        lines.append(f"CR Number: {mc.cr_number}")
+    if mc.website_url:
+        lines.append(f"Website: {mc.website_url}")
+    if mc.phone:
+        lines.append(f"Phone: {mc.phone}")
+    if mc.mobile:
+        lines.append(f"Mobile: {mc.mobile}")
+    if mc.city or mc.region:
+        lines.append(f"Location: {', '.join(x for x in (mc.city, mc.region) if x)}")
+
+    header = "\n".join(lines)
+    if task == "company_signals":
+        ask = (
+            "Research this company using publicly available sources (LinkedIn "
+            "company page — try both English and Arabic names, careers site, "
+            "Bayt, Indeed, Crunchbase) and return the signal bundle as a single "
+            "JSON object."
+        )
+    else:
+        ask = (
+            "Find the admin + GM champions at this company in Saudi Arabia "
+            "using publicly available LinkedIn profile data. Search by both "
+            "the English and Arabic company names to maximize coverage. "
+            "Return one JSON object."
+        )
+    return f"{header}\n\n{ask}"
 
 
 def _flat_to_champion(
