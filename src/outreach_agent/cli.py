@@ -12,6 +12,7 @@ from pathlib import Path
 import click
 
 from .config import Config
+from .csv_hint import row_to_mc_hint
 from .factory import build_pipeline
 from .models import QualificationResult
 
@@ -104,7 +105,14 @@ def score(ctx: click.Context, unified_number: str, dry_run: bool, json_out: str 
 def batch(ctx: click.Context, csv_path: str, out_path: str, dry_run: bool) -> None:
     """Score a CSV of Unified Numbers.
 
-    CSV must have a `unified_number` column. Max 50 per spec.
+    CSV must have a Unified Number column (accepted: `unified_number`,
+    `Unified Number`). Any of these additional columns, if present, are
+    used as a hint — we still fetch from MC but fall back to your row's
+    values for any field MC omits: Company Name (EN), Legal Entity,
+    Capital, Registration Status, Registration Number, Registration Type,
+    Registration Date, Expiry Date, Location, Phone, Activities.
+
+    Max 50 per spec.
     """
     config = ctx.obj["config"]
     if dry_run:
@@ -118,12 +126,17 @@ def batch(ctx: click.Context, csv_path: str, out_path: str, dry_run: bool) -> No
             if i >= 50:
                 click.echo("stopping at 50 leads (batch cap)", err=True)
                 break
+            hint = row_to_mc_hint(row)
+            raw_un = (
+                hint.unified_number if hint is not None
+                else row.get("unified_number", "")
+            )
             try:
-                un = _validate_unified_number(row["unified_number"])
+                un = _validate_unified_number(raw_un)
             except click.BadParameter as exc:
                 click.echo(f"skipping row {i+1}: {exc}", err=True)
                 continue
-            results.append(pipeline.run(un))
+            results.append(pipeline.run(un, mc_hint=hint))
 
     # Sort by score desc so the CRITICAL/HOT leads float to the top.
     results.sort(key=lambda r: r.total_score, reverse=True)

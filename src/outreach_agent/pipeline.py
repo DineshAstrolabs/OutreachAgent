@@ -16,8 +16,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from .classification import classify
+from .csv_hint import merge_hint_into_mc
 from .disqualification import apply_gates
-from .models import Champions, Classification, QualificationResult, WebIntelligence
+from .models import Champions, Classification, MCData, QualificationResult, WebIntelligence
 from .scoring import score
 from .sources.base import ChampionSourceP, CRMWriterP, MCSourceP, WebIntelligenceSourceP
 from .sources.v2030 import classify_isic
@@ -42,15 +43,23 @@ class Pipeline:
     champion_source: ChampionSourceP
     crm: CRMWriterP | None = None
 
-    def run(self, unified_number: str) -> QualificationResult:
+    def run(
+        self,
+        unified_number: str,
+        mc_hint: MCData | None = None,
+    ) -> QualificationResult:
         t_start = time.monotonic()
         log.info("=" * 72)
         log.info("QUALIFYING %s", unified_number)
         log.info("=" * 72)
 
-        # 1. MC CR pull + hard gates
+        # 1. MC CR pull + hard gates. An optional `mc_hint` (parsed from a
+        # batch-CSV row of pre-fetched CR data) backfills any field MC omits
+        # and acts as a full fallback when MC returns NOT_FOUND.
         with _step(f"STEP 1/6 — MC CR lookup for {unified_number}"):
             mc_data = self.mc.fetch(unified_number)
+            if mc_hint is not None:
+                mc_data = merge_hint_into_mc(mc_data, mc_hint)
         log.info(
             "  MC result: name=%r status=%s entity=%s expiry=%s isic=%s city=%s",
             mc_data.company_legal_name,
