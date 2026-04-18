@@ -79,12 +79,7 @@ class ApolloSource:
         company_name = mc.company_legal_name
         log.info("[apollo] enrich %r", company_name)
         try:
-            # Apollo's B2B graph is English-only, so AR name is useless here.
-            # If EN lookup misses, try the website domain from MC as a signal.
-            org = self._enrich_organization(company_name)
-            if not org and mc.website_url:
-                log.info("[apollo] EN name miss — retrying enrich via domain %s", mc.website_url)
-                org = self._enrich_organization_by_domain(mc.website_url)
+            org = self._find_organization(mc)
             if not org:
                 log.info("[apollo] no organization match for %s", company_name)
                 web.sources_failed.append(self.name)
@@ -128,9 +123,7 @@ class ApolloSource:
         company_name = mc.company_legal_name
         log.info("[apollo] find_champions %r", company_name)
         try:
-            org = self._enrich_organization(company_name)
-            if not org and mc.website_url:
-                org = self._enrich_organization_by_domain(mc.website_url)
+            org = self._find_organization(mc)
             if not org:
                 log.info("[apollo] no org match; empty champions")
                 return Champions()
@@ -151,6 +144,44 @@ class ApolloSource:
         except Exception as exc:
             log.warning("apollo champion search failed: %s", exc)
             return Champions()
+
+    # ---- Lookup orchestration --------------------------------------------
+
+    def _find_organization(self, mc: MCData) -> dict | None:
+        """Resolve an MC record to an Apollo organization.
+
+        Apollo's B2B graph is mostly English, but KSA-specific accounts are
+        sometimes indexed under the Arabic legal name (especially Saudi LLCs
+        whose English rendering is ad-hoc). Try in order:
+
+          1. English legal name
+          2. Arabic legal name (from MC or CSV hint) — cheap extra call,
+             often hits when the English transliteration is non-standard
+          3. Website domain via /organizations/enrich
+
+        If all three miss, Apollo is out; the factory-level chain then lets
+        AnthropicCompanySource take a swing.
+        """
+        if mc.company_legal_name:
+            org = self._enrich_organization(mc.company_legal_name)
+            if org:
+                return org
+        if mc.company_legal_name_ar:
+            log.info(
+                "[apollo] EN miss — retrying with Arabic name %r",
+                mc.company_legal_name_ar,
+            )
+            org = self._enrich_organization(mc.company_legal_name_ar)
+            if org:
+                return org
+        if mc.website_url:
+            log.info(
+                "[apollo] name miss — retrying enrich via domain %s", mc.website_url
+            )
+            org = self._enrich_organization_by_domain(mc.website_url)
+            if org:
+                return org
+        return None
 
     # ---- HTTP helpers -----------------------------------------------------
 
