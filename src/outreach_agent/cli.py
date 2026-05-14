@@ -119,7 +119,9 @@ def batch(ctx: click.Context, csv_path: str, out_path: str, dry_run: bool) -> No
         config = Config(**{**asdict(config), "mode": "stub"})
     pipeline = build_pipeline(config)
 
+    log = logging.getLogger("outreach_agent.cli")
     results: list[QualificationResult] = []
+    failures: list[dict[str, str]] = []
     with open(csv_path) as f:
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
@@ -135,8 +137,23 @@ def batch(ctx: click.Context, csv_path: str, out_path: str, dry_run: bool) -> No
                 un = _validate_unified_number(raw_un)
             except click.BadParameter as exc:
                 click.echo(f"skipping row {i+1}: {exc}", err=True)
+                failures.append({"row": str(i + 1), "unified_number": raw_un,
+                                 "error": str(exc)})
                 continue
-            results.append(pipeline.run(un, mc_hint=hint))
+            try:
+                results.append(pipeline.run(un, mc_hint=hint))
+            except Exception as exc:
+                # Don't let one bad lead (transient network blip, MC outage,
+                # a misparse, etc.) kill the rest of the batch. Log the
+                # error, record it in `failures`, and keep going so the
+                # results we DO have still get written.
+                log.exception("row %d (%s): pipeline failed — skipping", i + 1, un)
+                click.echo(
+                    f"row {i+1} ({un}): pipeline failed: {type(exc).__name__}: {exc}",
+                    err=True,
+                )
+                failures.append({"row": str(i + 1), "unified_number": un,
+                                 "error": f"{type(exc).__name__}: {exc}"})
 
     # Sort by score desc so the CRITICAL/HOT leads float to the top.
     results.sort(key=lambda r: r.total_score, reverse=True)
@@ -147,6 +164,10 @@ def batch(ctx: click.Context, csv_path: str, out_path: str, dry_run: bool) -> No
         [_result_to_dict(r) for r in results], indent=2, default=str,
     ))
     click.echo(f"wrote {len(results)} results to {out}")
+    if failures:
+        fail_path = out.with_name(out.stem + ".failures.json")
+        fail_path.write_text(json.dumps(failures, indent=2))
+        click.echo(f"wrote {len(failures)} failures to {fail_path}", err=True)
     _print_distribution(results)
 
 

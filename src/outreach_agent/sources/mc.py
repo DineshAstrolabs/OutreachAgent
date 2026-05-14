@@ -49,6 +49,21 @@ MC_ORIGIN = "https://mc.gov.sa"
 # Dump failed HTML here so the user can inspect the actual response.
 DEBUG_DIR = Path(".outreach-debug")
 
+# Transient network errors that should be retried with backoff rather than
+# bubbled up — covers DNS hiccups, dropped TCP, half-closed reads, captive
+# portals, etc. We never retry on HTTPStatusError (4xx/5xx is a real signal
+# from MC, not a network blip).
+_RETRYABLE_HTTP_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
+
 
 MC_PARSE_SYSTEM_PROMPT = """\
 You are parsing the HTML response from Saudi Arabia's Ministry of Commerce
@@ -186,7 +201,20 @@ class MCSource:
         last_html: str | None = None
         for attempt in range(1, self.captcha_attempts + 1):
             log.info("[MC] ===== attempt %d/%d =====", attempt, self.captcha_attempts)
-            parsed, html = self._attempt(unified_number)
+            try:
+                parsed, html = self._attempt(unified_number)
+            except _RETRYABLE_HTTP_ERRORS as exc:
+                # DNS / TCP / read timeout on an MC request — distinct from
+                # a bad-captcha NOT_FOUND. The _request helper has already
+                # exhausted its own per-call retries; spend another
+                # captcha-attempt slot before giving up so a brief network
+                # outage doesn't tank an entire batch.
+                log.warning(
+                    "[MC] attempt %d: transient network error talking to MC: %s",
+                    attempt,
+                    exc,
+                )
+                continue
             last_html = html
             if parsed is None:
                 # Hard failure (missing form fields / captcha image missing).
@@ -206,12 +234,49 @@ class MCSource:
             self._maybe_dump(unified_number, last_html)
         return _not_found(unified_number)
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_attempts: int = 4,
+        **kwargs,
+    ) -> httpx.Response:
+        """HTTP call with exponential backoff on transient network errors.
+
+        2s, 4s, 8s, ... — matches the project-wide git push convention. We
+        only retry the network-layer exceptions in `_RETRYABLE_HTTP_ERRORS`;
+        a 4xx/5xx response is raised by the caller via `raise_for_status()`
+        and is not retried here (it's a real signal from MC, not a blip).
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return self.http.request(method, url, **kwargs)
+            except _RETRYABLE_HTTP_ERRORS as exc:
+                last_exc = exc
+                if attempt == max_attempts:
+                    log.warning(
+                        "[MC] %s %s failed after %d attempts: %s",
+                        method, url, attempt, exc,
+                    )
+                    raise
+                backoff = 2 ** attempt  # 2s, 4s, 8s
+                log.warning(
+                    "[MC] %s %s attempt %d/%d failed (%s) — retrying in %ds",
+                    method, url, attempt, max_attempts, exc, backoff,
+                )
+                time.sleep(backoff)
+        # Unreachable: loop either returns or re-raises.
+        assert last_exc is not None
+        raise last_exc
+
     def _attempt(self, unified_number: str) -> tuple[MCParsed | None, str | None]:
         """Single GET → solve → POST → parse cycle. Returns (parsed, html).
         parsed is None for hard failures; html is None when we didn't POST."""
         log.info("[MC] step 1: GET initial form page %s", MC_URL)
         t0 = time.monotonic()
-        page = self.http.get(MC_URL)
+        page = self._request("GET", MC_URL)
         page.raise_for_status()
         log.info("[MC] form page: %d bytes in %.2fs", len(page.text), time.monotonic() - t0)
         soup = BeautifulSoup(page.text, "html.parser")
@@ -258,7 +323,9 @@ class MCSource:
 
         log.info("[MC] step 4: downloading captcha image")
         t0 = time.monotonic()
-        img_bytes = self.http.get(img_url, headers={"Referer": MC_URL}).content
+        img_bytes = self._request(
+            "GET", img_url, headers={"Referer": MC_URL}
+        ).content
         log.info("[MC] captcha image: %d bytes in %.2fs", len(img_bytes), time.monotonic() - t0)
 
         log.info("[MC] step 5: solving captcha via provider %r", self.captcha.name)
@@ -281,7 +348,8 @@ class MCSource:
 
         log.info("[MC] step 7: POST form to %s", MC_URL)
         t0 = time.monotonic()
-        submit = self.http.post(
+        submit = self._request(
+            "POST",
             MC_URL,
             data=payload,
             headers={
